@@ -1,0 +1,17 @@
+[package]
+name = "sdl-mandelbrot"
+version = "0.1.0"
+authors = ["Corin Lawson <corin@phiware.com.au>"]
+edition = "2018"
+license = "MIT"
+
+keywords = ["cli", "graphics", "fractal", "mandelbrot", "sdl2"]
+categories = ["command-line-utilities", "graphics"]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+sdl2 = "0.33.0"
+num-complex = "0.2.4"
+[dependencies.exit]
+git = "https://github.com/au-phiware/exit"
