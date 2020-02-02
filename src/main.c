@@ -3,6 +3,16 @@
 
 #define SUCCESS 0
 
+static Uint64 frameClockSamples[64] = {0};
+static int currentFrameClockSample = 1;
+static void TrackFrameRate() {
+    frameClockSamples[currentFrameClockSample++ & 63] = SDL_GetPerformanceCounter();
+    if (((currentFrameClockSample & 63) == 1) && (frameClockSamples[0] != 0)) {
+        Uint64 ticks = frameClockSamples[0] - frameClockSamples[1];
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "%5.1f fps", (float)SDL_GetPerformanceFrequency()/(ticks>>6));
+    }
+}
+
 int ClearRenderer(SDL_Renderer *renderer) {
     int err = SUCCESS;
 
@@ -31,6 +41,8 @@ int RenderFrame(SDL_Renderer *renderer) {
     }
 
     SDL_RenderPresent(renderer);
+
+    TrackFrameRate();
 
     return err;
 }
