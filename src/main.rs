@@ -6,8 +6,9 @@ use num_complex::Complex64;
 use sdl2::{
     event::{Event, WindowEvent},
     keyboard::Keycode,
+    mouse::MouseButton,
     pixels::{Color, Palette, PixelFormatEnum},
-    rect::Rect,
+    rect::{Point, Rect},
     render::Canvas,
     surface::Surface,
     video::Window,
@@ -16,7 +17,16 @@ use sdl2::{
 const DIV_LIMIT: f64 = 200f64;
 const INITIAL_RES: i32 = 11;
 
-fn compute(pixels: &mut [u8], rect: Rect, res: i32, tx: Complex64, tn: Complex64) {
+fn compute(
+    pixels: &mut [u8],
+    rect: Rect,
+    res: i32,
+    tx: Complex64,
+    tn: Complex64,
+    orbit: &mut Vec<Complex64>,
+    p_x: i32,
+    p_y: i32,
+) {
     let mut c = Complex64 { re: 0., im: 0. };
     let mut z = Complex64 { re: 0., im: 0. };
     for x in ((res - 1) / 2..rect.w).step_by(res as usize) {
@@ -25,12 +35,18 @@ fn compute(pixels: &mut [u8], rect: Rect, res: i32, tx: Complex64, tn: Complex64
             c.im = y as f64;
             c = c * tx + tn;
             z.clone_from(&c);
+            if x == p_x && y == p_y {
+                orbit.push(z.clone());
+            }
             let mut m = z.norm_sqr();
             let mut n = 255;
             while m < DIV_LIMIT && n > 0 {
                 z = z * z + c;
                 m = z.norm_sqr();
                 n -= 1;
+                if x == p_x && y == p_y {
+                    orbit.push(z.clone());
+                }
             }
             for i in -((res - 1) / 2)..=((res - 1) / 2) {
                 for j in -((res - 1) / 2)..=((res - 1) / 2) {
@@ -44,12 +60,20 @@ fn compute(pixels: &mut [u8], rect: Rect, res: i32, tx: Complex64, tn: Complex64
     }
 }
 
-fn draw(canvas: &mut Canvas<Window>, res: i32, tx: Complex64, tn: Complex64) -> Result<(), String> {
+fn draw(
+    canvas: &mut Canvas<Window>,
+    res: i32,
+    tx: Complex64,
+    tn: Complex64,
+    p_x: i32,
+    p_y: i32,
+) -> Result<(), String> {
     let texture_creator = canvas.texture_creator();
     let rect = canvas.viewport();
     let mut pixels = vec![0u8; (rect.w * rect.h) as usize];
+    let mut orbit = Vec::<Complex64>::new();
 
-    compute(&mut pixels, rect, res, tx, tn);
+    compute(&mut pixels, rect, res, tx, tn, &mut orbit, p_x, p_y);
 
     let mut surface = Surface::from_data(
         &mut pixels,
@@ -63,6 +87,19 @@ fn draw(canvas: &mut Canvas<Window>, res: i32, tx: Complex64, tn: Complex64) -> 
         .create_texture_from_surface(surface)
         .map_err(|e| e.to_string())?;
     canvas.copy(&texture, None, None)?;
+
+    canvas.set_draw_color(PALETTE[255]);
+    canvas.draw_lines::<&[Point]>(
+        orbit
+            .iter()
+            .map(|c| {
+                let a = (c - tn) / tx;
+                Point::new(a.re as i32, a.im as i32)
+            })
+            .collect::<Vec<_>>()
+            .as_slice(),
+    )?;
+
     Result::Ok(())
 }
 
@@ -84,6 +121,7 @@ pub fn main() -> exit::Result {
 
     let mut event_pump = sdl_context.event_pump()?;
     let mut res = INITIAL_RES;
+    let (mut p_x, mut p_y) = (-1, -1);
     'running: loop {
         if res > 0 {
             if res == INITIAL_RES {
@@ -101,7 +139,7 @@ pub fn main() -> exit::Result {
                     re: (-w as f64) / 2.,
                     im: (-h as f64) / 2.,
                 } * tx;
-            draw(&mut canvas, res, tx, t)?;
+            draw(&mut canvas, res, tx, t, p_x, p_y)?;
 
             canvas.present();
             res -= 2;
@@ -140,6 +178,21 @@ pub fn main() -> exit::Result {
                 Event::MouseWheel { which: 0, y: n, .. } => {
                     scale *= 1.5f64.powi(n);
                     res = INITIAL_RES;
+                }
+                Event::MouseButtonUp {
+                    x, y, mouse_btn, ..
+                } => match mouse_btn {
+                    MouseButton::Left => {
+                        p_x = x;
+                        p_y = y;
+                        res = INITIAL_RES;
+                    }
+                    MouseButton::Right => {
+                        p_x = -1;
+                        p_y = -1;
+                        res = INITIAL_RES;
+                    }
+                    _ => {}
                 }
                 _ => {}
             }
