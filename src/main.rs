@@ -20,13 +20,13 @@ fn draw(canvas: &mut Canvas<Window>, res: i32) -> Result<(), String> {
     let mut pixels = vec![0u8; (rect.w * rect.h) as usize];
 
     let r = if rect.h < rect.w { rect.h } else { rect.w } / 4;
+    let mut c = Complex64 { re: 0., im: 0. };
+    let mut z = Complex64 { re: 0., im: 0. };
     for x in ((res - 1) / 2..rect.w).step_by(res as usize) {
         for y in ((res - 1) / 2..rect.h).step_by(res as usize) {
-            let c = Complex64::new(
-                ((x as f64) - (rect.w as f64) / 2.) / (r as f64),
-                ((y as f64) - (rect.h as f64) / 2.) / (r as f64),
-            );
-            let mut z = c.clone();
+            c.re = ((x as f64) - (rect.w as f64) / 2.) / (r as f64);
+            c.im = ((y as f64) - (rect.h as f64) / 2.) / (r as f64);
+            z.clone_from(&c);
             let mut m = z.norm_sqr();
             let mut n = 255;
             while m < DIV_LIMIT && n > 0 {
