@@ -7,25 +7,23 @@ use sdl2::{
     event::{Event, WindowEvent},
     keyboard::Keycode,
     pixels::{Color, Palette, PixelFormatEnum},
+    rect::Rect,
     render::Canvas,
     surface::Surface,
     video::Window,
 };
 
 const DIV_LIMIT: f64 = 200f64;
+const INITIAL_RES: i32 = 11;
 
-fn draw(canvas: &mut Canvas<Window>, res: i32) -> Result<(), String> {
-    let texture_creator = canvas.texture_creator();
-    let rect = canvas.viewport();
-    let mut pixels = vec![0u8; (rect.w * rect.h) as usize];
-
-    let r = if rect.h < rect.w { rect.h } else { rect.w } / 4;
+fn compute(pixels: &mut [u8], rect: Rect, res: i32, tx: Complex64, tn: Complex64) {
     let mut c = Complex64 { re: 0., im: 0. };
     let mut z = Complex64 { re: 0., im: 0. };
     for x in ((res - 1) / 2..rect.w).step_by(res as usize) {
         for y in ((res - 1) / 2..rect.h).step_by(res as usize) {
-            c.re = ((x as f64) - (rect.w as f64) / 2.) / (r as f64);
-            c.im = ((y as f64) - (rect.h as f64) / 2.) / (r as f64);
+            c.re = x as f64;
+            c.im = y as f64;
+            c = c * tx + tn;
             z.clone_from(&c);
             let mut m = z.norm_sqr();
             let mut n = 255;
@@ -44,6 +42,14 @@ fn draw(canvas: &mut Canvas<Window>, res: i32) -> Result<(), String> {
             }
         }
     }
+}
+
+fn draw(canvas: &mut Canvas<Window>, res: i32, tx: Complex64, tn: Complex64) -> Result<(), String> {
+    let texture_creator = canvas.texture_creator();
+    let rect = canvas.viewport();
+    let mut pixels = vec![0u8; (rect.w * rect.h) as usize];
+
+    compute(&mut pixels, rect, res, tx, tn);
 
     let mut surface = Surface::from_data(
         &mut pixels,
@@ -64,22 +70,38 @@ pub fn main() -> exit::Result {
     let sdl_context = sdl2::init()?;
     let video_subsystem = sdl_context.video()?;
 
+    let (mut w, mut h) = (600, 600);
     let window = video_subsystem
-        .window("Mandelbrot", 600, 600)
+        .window("Mandelbrot", w as u32, h as u32)
         .position_centered()
         .resizable()
         .build()?;
 
     let mut canvas = window.into_canvas().accelerated().build()?;
+    let mut scale = 4.;
+    let mut tx = Complex64::new(0., 0.);
+    let mut tn = Complex64::new(0., 0.);
 
     let mut event_pump = sdl_context.event_pump()?;
-    let mut res = 25;
+    let mut res = INITIAL_RES;
     'running: loop {
         if res > 0 {
+            if res == INITIAL_RES {
+                tx = Complex64 {
+                    re: scale / (if h < w { h } else { w } as f64),
+                    im: 0.,
+                };
+            }
+
             canvas.set_draw_color(Color::RGB(0, 0, 0));
             canvas.clear();
 
-            draw(&mut canvas, res)?;
+            let t = tn
+                + Complex64 {
+                    re: (-w as f64) / 2.,
+                    im: (-h as f64) / 2.,
+                } * tx;
+            draw(&mut canvas, res, tx, t)?;
 
             canvas.present();
             res -= 2;
@@ -93,14 +115,31 @@ pub fn main() -> exit::Result {
                     ..
                 } => break 'running,
                 Event::Window {
-                    win_event: WindowEvent::SizeChanged(_, _),
+                    win_event: WindowEvent::SizeChanged(width, height),
                     ..
                 }
                 | Event::Window {
-                    win_event: WindowEvent::Resized(_, _),
+                    win_event: WindowEvent::Resized(width, height),
                     ..
                 } => {
-                    res = 25;
+                    w = width;
+                    h = height;
+                    res = INITIAL_RES;
+                }
+                Event::MouseMotion {
+                    xrel,
+                    yrel,
+                    mousestate,
+                    ..
+                } => {
+                    if mousestate.left() {
+                        tn += Complex64::new(-xrel as f64, -yrel as f64) * tx;
+                        res = INITIAL_RES;
+                    }
+                }
+                Event::MouseWheel { which: 0, y: n, .. } => {
+                    scale *= 1.5f64.powi(n);
+                    res = INITIAL_RES;
                 }
                 _ => {}
             }
