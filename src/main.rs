@@ -8,8 +8,8 @@ use sdl2::{
     keyboard::Keycode,
     mouse::MouseButton,
     pixels::{Color, Palette, PixelFormatEnum},
-    rect::{Point, Rect},
-    render::Canvas,
+    rect::Point,
+    render,
     surface::Surface,
     video::Window,
 };
@@ -17,83 +17,87 @@ use sdl2::{
 const DIV_LIMIT: f64 = 200f64;
 const INITIAL_RES: i32 = 11;
 
-fn compute(
-    pixels: &mut [u8],
-    rect: Rect,
+struct Canvas {
+    pixels: Vec<u8>,
+    w: u32,
+    h: u32,
     res: i32,
     tx: Complex64,
     tn: Complex64,
-    orbit: &mut Vec<Complex64>,
-    p_x: i32,
-    p_y: i32,
-) {
+}
+
+fn compute(canvas: &mut Canvas, orbit: &mut Vec<Complex64>, p_x: i32, p_y: i32) {
     let mut c = Complex64 { re: 0., im: 0. };
     let mut z = Complex64 { re: 0., im: 0. };
-    for x in ((res - 1) / 2..rect.w).step_by(res as usize) {
-        for y in ((res - 1) / 2..rect.h).step_by(res as usize) {
-            c.re = x as f64;
-            c.im = y as f64;
-            c = c * tx + tn;
-            z.clone_from(&c);
-            if x == p_x && y == p_y {
-                orbit.push(z.clone());
-            }
-            let mut m = z.norm_sqr();
-            let mut n = 255;
-            while m < DIV_LIMIT && n > 0 {
-                z = z * z + c;
-                m = z.norm_sqr();
-                n -= 1;
+    let w = canvas.w as i32;
+    let h = canvas.h as i32;
+    for x in ((canvas.res - 1) / 2..w).step_by(canvas.res as usize) {
+        for y in ((canvas.res - 1) / 2..h).step_by(canvas.res as usize) {
+            let idx = (y * w + x) as usize;
+            if canvas.pixels[idx] == 0 {
+                c.re = x as f64;
+                c.im = y as f64;
+                c = c * canvas.tx + canvas.tn;
+                z.clone_from(&c);
                 if x == p_x && y == p_y {
                     orbit.push(z.clone());
                 }
-            }
-            for i in -((res - 1) / 2)..=((res - 1) / 2) {
-                for j in -((res - 1) / 2)..=((res - 1) / 2) {
-                    let idx = (y + j) * rect.w + x + i;
-                    if idx >= 0 && idx < rect.w * rect.h {
-                        pixels[idx as usize] = n;
+                let mut m = z.norm_sqr();
+                let mut n = 255;
+                while m < DIV_LIMIT && n > 0 {
+                    z = z * z + c;
+                    m = z.norm_sqr();
+                    n -= 1;
+                    if x == p_x && y == p_y {
+                        orbit.push(z.clone());
                     }
                 }
+                canvas.pixels[idx] = n;
+                /*
+                for i in -((canvas.res - 1) / 2)..=((canvas.res - 1) / 2) {
+                    for j in -((canvas.res - 1) / 2)..=((canvas.res - 1) / 2) {
+                        let idx = (y + j) * w + x + i;
+                        if idx >= 0 && idx < w * h {
+                            canvas.pixels[idx as usize] = n;
+                        }
+                    }
+                }
+                */
             }
         }
     }
 }
 
 fn draw(
-    canvas: &mut Canvas<Window>,
-    res: i32,
-    tx: Complex64,
-    tn: Complex64,
+    window: &mut render::Canvas<Window>,
+    canvas: &mut Canvas,
     p_x: i32,
     p_y: i32,
 ) -> Result<(), String> {
-    let texture_creator = canvas.texture_creator();
-    let rect = canvas.viewport();
-    let mut pixels = vec![0u8; (rect.w * rect.h) as usize];
+    let texture_creator = window.texture_creator();
     let mut orbit = Vec::<Complex64>::new();
 
-    compute(&mut pixels, rect, res, tx, tn, &mut orbit, p_x, p_y);
+    compute(canvas, &mut orbit, p_x, p_y);
 
     let mut surface = Surface::from_data(
-        &mut pixels,
-        rect.w as u32,
-        rect.h as u32,
-        rect.w as u32,
+        &mut canvas.pixels,
+        canvas.w,
+        canvas.h,
+        canvas.w,
         PixelFormatEnum::Index8,
     )?;
     surface.set_palette(&Palette::with_colors(&PALETTE)?)?;
     let texture = texture_creator
         .create_texture_from_surface(surface)
         .map_err(|e| e.to_string())?;
-    canvas.copy(&texture, None, None)?;
+    window.copy(&texture, None, None)?;
 
-    canvas.set_draw_color(PALETTE[255]);
-    canvas.draw_lines::<&[Point]>(
+    window.set_draw_color(PALETTE[255]);
+    window.draw_lines::<&[Point]>(
         orbit
             .iter()
             .map(|c| {
-                let a = (c - tn) / tx;
+                let a = (c - canvas.tn) / canvas.tx;
                 Point::new(a.re as i32, a.im as i32)
             })
             .collect::<Vec<_>>()
@@ -107,42 +111,50 @@ pub fn main() -> exit::Result {
     let sdl_context = sdl2::init()?;
     let video_subsystem = sdl_context.video()?;
 
-    let (mut w, mut h) = (600, 600);
+    let mut brot = &mut Canvas {
+        pixels: Vec::new(),
+        w: 600,
+        h: 600,
+        res: INITIAL_RES,
+        tx: Complex64::new(0., 0.),
+        tn: Complex64::new(0., 0.),
+    };
+    let mut tn = Complex64::new(0., 0.);
+    let mut scale = 4.;
+
     let window = video_subsystem
-        .window("Mandelbrot", w as u32, h as u32)
+        .window("Mandelbrot", brot.w, brot.h)
         .position_centered()
         .resizable()
         .build()?;
-
     let mut canvas = window.into_canvas().accelerated().build()?;
-    let mut scale = 4.;
-    let mut tx = Complex64::new(0., 0.);
-    let mut tn = Complex64::new(0., 0.);
 
     let mut event_pump = sdl_context.event_pump()?;
-    let mut res = INITIAL_RES;
     let (mut p_x, mut p_y) = (-1, -1);
     'running: loop {
-        if res > 0 {
-            if res == INITIAL_RES {
-                tx = Complex64 {
-                    re: scale / (if h < w { h } else { w } as f64),
+        if brot.res > 0 {
+            if brot.res == INITIAL_RES {
+                brot.tx = Complex64 {
+                    re: scale / (if brot.h < brot.w { brot.h } else { brot.w } as f64),
                     im: 0.,
                 };
+                brot.tn = tn
+                    + Complex64 {
+                        re: -(brot.w as f64) / 2.,
+                        im: -(brot.h as f64) / 2.,
+                    } * brot.tx;
+                brot.pixels.clear();
+                brot.pixels
+                    .resize_with((brot.w * brot.h) as usize, Default::default);
             }
 
             canvas.set_draw_color(Color::RGB(0, 0, 0));
             canvas.clear();
 
-            let t = tn
-                + Complex64 {
-                    re: (-w as f64) / 2.,
-                    im: (-h as f64) / 2.,
-                } * tx;
-            draw(&mut canvas, res, tx, t, p_x, p_y)?;
+            draw(&mut canvas, brot, p_x, p_y)?;
 
             canvas.present();
-            res -= 2;
+            brot.res -= 2;
         }
 
         for event in event_pump.poll_iter() {
@@ -160,9 +172,9 @@ pub fn main() -> exit::Result {
                     win_event: WindowEvent::Resized(width, height),
                     ..
                 } => {
-                    w = width;
-                    h = height;
-                    res = INITIAL_RES;
+                    brot.w = width as u32;
+                    brot.h = height as u32;
+                    brot.res = INITIAL_RES;
                 }
                 Event::MouseMotion {
                     xrel,
@@ -171,13 +183,13 @@ pub fn main() -> exit::Result {
                     ..
                 } => {
                     if mousestate.left() {
-                        tn += Complex64::new(-xrel as f64, -yrel as f64) * tx;
-                        res = INITIAL_RES;
+                        tn += Complex64::new(-xrel as f64, -yrel as f64) * brot.tx;
+                        brot.res = INITIAL_RES;
                     }
                 }
                 Event::MouseWheel { which: 0, y: n, .. } => {
                     scale *= 1.5f64.powi(n);
-                    res = INITIAL_RES;
+                    brot.res = INITIAL_RES;
                 }
                 Event::MouseButtonUp {
                     x, y, mouse_btn, ..
@@ -185,15 +197,15 @@ pub fn main() -> exit::Result {
                     MouseButton::Left => {
                         p_x = x;
                         p_y = y;
-                        res = INITIAL_RES;
+                        brot.res = INITIAL_RES;
                     }
                     MouseButton::Right => {
                         p_x = -1;
                         p_y = -1;
-                        res = INITIAL_RES;
+                        brot.res = INITIAL_RES;
                     }
                     _ => {}
-                }
+                },
                 _ => {}
             }
         }
