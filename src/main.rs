@@ -35,7 +35,7 @@ impl Image {
             w,
             h,
             res: INITIAL_RES,
-            tx: Complex64 { re: 0., im: 0. },
+            tx: Complex64 { re: 1., im: 0. },
             tn: Complex64 { re: 0., im: 0. },
         }
     }
@@ -58,20 +58,17 @@ impl Image {
         }
     }
 
-    fn set_transform(&mut self, scale: f64, tn: Complex64) {
-        self.tx = Complex64 {
-            re: scale / (if self.h < self.w { self.h } else { self.w } as f64),
-            im: 0.,
-        };
-        self.tn = tn
-            + Complex64 {
-                re: -(self.w as f64) / 2.,
-                im: -(self.h as f64) / 2.,
-            } * self.tx;
+    fn translate(&mut self, tn: Complex64) {
+        self.tn += tn;
+    }
+
+    fn scale(&mut self, scale: f64) {
+        self.tx *= Complex64 { re: scale, im: 0. };
     }
 
     fn compute_orbit(&self, orbit: &mut Vec<Complex64>, c: Complex64) {
         let mut z = c.clone();
+        orbit.push(Complex64 { re: 0., im: 0. });
         orbit.push(c);
         let mut m = z.norm_sqr();
         let mut n = 255;
@@ -175,11 +172,14 @@ pub fn main() -> exit::Result {
     let sdl_context = sdl2::init()?;
     let video_subsystem = sdl_context.video()?;
 
-    let mut image = &mut Image::new(600, 600);
-    let mut offset = Complex64 { re: 0., im: 0. };
-    let mut scale = 4.;
+    let (mut w, mut h) = (600, 600);
+    let mut image = &mut Image::new(w, h);
+    let mut locus_x = 0;
+    let mut locus_y = 0;
     let mut trace_orbit = false;
     let mut pin_orbit = false;
+    image.scale(2. / 300.);
+    image.translate(Complex64 { re: -2., im: -2. });
 
     let window = video_subsystem
         .window("Mandelbrot", image.w, image.h)
@@ -192,7 +192,6 @@ pub fn main() -> exit::Result {
     let mut p: Option<Complex64> = None;
     'running: loop {
         if image.res == INITIAL_RES {
-            image.set_transform(scale, offset);
             image.clear();
         }
 
@@ -229,6 +228,19 @@ pub fn main() -> exit::Result {
                     win_event: WindowEvent::Resized(width, height),
                     ..
                 } => {
+                    let preserve_width = (width as f64) / (w as f64);
+                    let preserve_height = (height as f64) / (h as f64);
+                    image.scale(
+                        1. / if preserve_width < preserve_height {
+                            w = width as u32;
+                            h = (h as f64 * preserve_width) as u32;
+                            preserve_width
+                        } else {
+                            w = (w as f64 * preserve_height) as u32;
+                            h = height as u32;
+                            preserve_height
+                        },
+                    );
                     image.w = width as u32;
                     image.h = height as u32;
                     image.res = INITIAL_RES;
@@ -241,11 +253,17 @@ pub fn main() -> exit::Result {
                     mousestate,
                     ..
                 } => {
+                    locus_x = x;
+                    locus_y = y;
                     if mousestate.left() {
-                        offset += Complex64 {
-                            re: -xrel as f64,
-                            im: -yrel as f64,
-                        } * image.tx;
+                        w = image.w;
+                        h = image.h;
+                        image.translate(
+                            Complex64 {
+                                re: -xrel as f64,
+                                im: -yrel as f64,
+                            } * image.tx.norm(),
+                        );
                         image.res = INITIAL_RES;
                     }
                     if !pin_orbit {
@@ -256,7 +274,21 @@ pub fn main() -> exit::Result {
                     }
                 }
                 Event::MouseWheel { which: 0, y: n, .. } => {
-                    scale *= 1.5f64.powi(n);
+                    w = image.w;
+                    h = image.h;
+                    image.translate(
+                        Complex64 {
+                            re: locus_x as f64,
+                            im: locus_y as f64,
+                        } * image.tx.norm(),
+                    );
+                    image.scale(1.1f64.powi(n));
+                    image.translate(
+                        Complex64 {
+                            re: -locus_x as f64,
+                            im: -locus_y as f64,
+                        } * image.tx.norm(),
+                    );
                     image.res = INITIAL_RES;
                 }
                 Event::MouseButtonUp { mouse_btn, .. } => match mouse_btn {
