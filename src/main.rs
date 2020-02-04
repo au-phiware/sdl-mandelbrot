@@ -26,6 +26,9 @@ struct Image {
     res: i32,
     tx: Complex64,
     tn: Complex64,
+
+    orbit: Vec<Complex64>,
+    c: Option<Complex64>,
 }
 
 impl Image {
@@ -37,6 +40,9 @@ impl Image {
             res: INITIAL_RES,
             tx: Complex64 { re: 1., im: 0. },
             tn: Complex64 { re: 0., im: 0. },
+
+            orbit: Vec::<Complex64>::new(),
+            c: None,
         }
     }
 
@@ -66,17 +72,20 @@ impl Image {
         self.tx *= Complex64 { re: scale, im: 0. };
     }
 
-    fn compute_orbit(&self, orbit: &mut Vec<Complex64>, c: Complex64) {
-        let mut z = c.clone();
-        orbit.push(Complex64 { re: 0., im: 0. });
-        orbit.push(c);
-        let mut m = z.norm_sqr();
-        let mut n = 255;
-        while m < DIV_LIMIT && n > 0 {
-            z = z * z + c;
-            m = z.norm_sqr();
-            n -= 1;
-            orbit.push(z.clone());
+    fn compute_orbit(&mut self) {
+        self.orbit.clear();
+        if let Some(c) = self.c {
+            let mut z = c.clone();
+            self.orbit.push(Complex64 { re: 0., im: 0. });
+            self.orbit.push(c);
+            let mut m = z.norm_sqr();
+            let mut n = 255;
+            while m < DIV_LIMIT && n > 0 {
+                z = z * z + c;
+                m = z.norm_sqr();
+                n -= 1;
+                self.orbit.push(z.clone());
+            }
         }
     }
 
@@ -116,13 +125,9 @@ impl Image {
 
     fn draw(&mut self, window: &mut Canvas<Window>, p: Option<Complex64>) -> Result<(), String> {
         let texture_creator = window.texture_creator();
-        let mut orbit = Vec::<Complex64>::new();
 
         if self.res > 0 {
             self.compute();
-        }
-        if let Some(c) = p {
-            self.compute_orbit(&mut orbit, c);
         }
 
         let mut pixels = self.pixels.clone();
@@ -153,16 +158,22 @@ impl Image {
         window.copy(&texture, None, None)?;
 
         window.set_draw_color(PALETTE[255]);
-        window.draw_lines::<&[Point]>(
-            orbit
-                .iter()
-                .filter_map(|&c| {
-                    self.transform_inv(c)
-                        .and_then(|a| Some(Point::new(a.re as i32, a.im as i32)))
-                })
-                .collect::<Vec<_>>()
-                .as_slice(),
-        )?;
+        if self.c != p {
+            self.c = p;
+            self.compute_orbit();
+        }
+        if self.c.is_some() {
+            window.draw_lines::<&[Point]>(
+                self.orbit
+                    .iter()
+                    .filter_map(|&c| {
+                        self.transform_inv(c)
+                            .and_then(|a| Some(Point::new(a.re as i32, a.im as i32)))
+                    })
+                    .collect::<Vec<_>>()
+                    .as_slice(),
+            )?;
+        }
 
         Result::Ok(())
     }
@@ -195,14 +206,16 @@ pub fn main() -> exit::Result {
             image.clear();
         }
 
-        canvas.set_draw_color(Color::RGB(0, 0, 0));
-        canvas.clear();
+        if image.res > 0 || trace_orbit && p != image.c || !trace_orbit && !image.c.is_none() {
+            canvas.set_draw_color(Color::RGB(0, 0, 0));
+            canvas.clear();
 
-        image.draw(&mut canvas, if trace_orbit { p } else { None })?;
+            image.draw(&mut canvas, if trace_orbit { p } else { None })?;
 
-        canvas.present();
-        if image.res > 0 {
-            image.res -= 2;
+            canvas.present();
+            if image.res > 0 {
+                image.res -= 2;
+            }
         }
 
         for event in event_pump.poll_iter() {
