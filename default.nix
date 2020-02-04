@@ -50,6 +50,7 @@ mkRustCrate rec {
       inherit name version;
       sha256 = "1zsrdcl2yigvg0zbrpgq4j4d9v74a15bkkdpr24wn0xvjz3bi2s1";
     };
+    features = [ "std" ];
     dependencies = [ num_traits ];
     buildDependencies = [ autocfg ];
   };
@@ -118,7 +119,18 @@ mkRustCrate rec {
       inherit name version;
       sha256 = "0vr6ca475yglxdz7qriasdziq0cqn54z0z1xkmiqlnjx30plwmbl";
     };
+    features = [ "libm" ];
+    dependencies = [ libm ];
     buildDependencies = [ autocfg ];
+  };
+
+  libm = mkRustCrate rec {
+    name = "libm";
+    version = "0.2.1";
+    src = fetchFromCratesIo {
+      inherit name version;
+      sha256 = "1c1jz9pkbv71icgi3cvzhh9g3mzjmj0bc8xv4l1w2b0wqcxxjnlc";
+    };
   };
 
   autocfg = mkRustCrate rec {

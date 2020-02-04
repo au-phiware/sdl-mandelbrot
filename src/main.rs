@@ -31,38 +31,49 @@ fn compute(canvas: &mut Canvas, orbit: &mut Vec<Complex64>, p_x: i32, p_y: i32) 
     let mut z = Complex64 { re: 0., im: 0. };
     let w = canvas.w as i32;
     let h = canvas.h as i32;
-    for x in ((canvas.res - 1) / 2..w).step_by(canvas.res as usize) {
-        for y in ((canvas.res - 1) / 2..h).step_by(canvas.res as usize) {
+    let res = canvas.res;
+    let (xrange, yrange) = if res > 0 {
+        (
+            ((res - 1) / 2..w).step_by(res as usize),
+            ((res - 1) / 2..h).step_by(res as usize),
+        )
+    } else if p_x > 0 && p_y > 0 {
+        ((p_x..p_x + 1).step_by(1), (p_y..p_y + 1).step_by(1))
+    } else {
+        ((p_x..p_x).step_by(1), (p_y..p_y).step_by(1))
+    };
+    for y in yrange {
+        for x in xrange.clone() {
+            let record_orbit = x == p_x && y == p_y;
             let idx = (y * w + x) as usize;
-            if canvas.pixels[idx] == 0 {
+            if record_orbit || canvas.pixels[idx] == 0 {
                 c.re = x as f64;
                 c.im = y as f64;
                 c = c * canvas.tx + canvas.tn;
-                z.clone_from(&c);
-                if x == p_x && y == p_y {
-                    orbit.push(z.clone());
-                }
-                let mut m = z.norm_sqr();
-                let mut n = 255;
-                while m < DIV_LIMIT && n > 0 {
-                    z = z * z + c;
-                    m = z.norm_sqr();
-                    n -= 1;
-                    if x == p_x && y == p_y {
-                        orbit.push(z.clone());
+                if record_orbit
+                    || !(4. * (c + 1.).norm() < 1. || {
+                        let (r, t) = (c - 0.25).to_polar();
+                        2. * r < 1. - t.cos()
+                    })
+                {
+                    if record_orbit {
+                        orbit.push(c.clone());
                     }
-                }
-                canvas.pixels[idx] = n;
-                /*
-                for i in -((canvas.res - 1) / 2)..=((canvas.res - 1) / 2) {
-                    for j in -((canvas.res - 1) / 2)..=((canvas.res - 1) / 2) {
-                        let idx = (y + j) * w + x + i;
-                        if idx >= 0 && idx < w * h {
-                            canvas.pixels[idx as usize] = n;
+                    z.clone_from(&c);
+                    let mut m = z.norm_sqr();
+                    let mut n = 255;
+                    while m < DIV_LIMIT && n > 0 {
+                        z = z * z + c;
+                        m = z.norm_sqr();
+                        n -= 1;
+                        if record_orbit {
+                            orbit.push(z.clone());
                         }
                     }
+                    if idx < canvas.pixels.len() {
+                        canvas.pixels[idx] = n;
+                    }
                 }
-                */
             }
         }
     }
@@ -79,8 +90,26 @@ fn draw(
 
     compute(canvas, &mut orbit, p_x, p_y);
 
+    let mut pixels = canvas.pixels.clone();
+    if canvas.res > 1 {
+        let w = canvas.w as i32;
+        let h = canvas.h as i32;
+        for x in ((canvas.res - 1) / 2..w).step_by(canvas.res as usize) {
+            for y in ((canvas.res - 1) / 2..h).step_by(canvas.res as usize) {
+                let n = canvas.pixels[(y * w + x) as usize];
+                for i in -((canvas.res - 1) / 2)..=((canvas.res - 1) / 2) {
+                    for j in -((canvas.res - 1) / 2)..=((canvas.res - 1) / 2) {
+                        let idx = (y + j) * w + x + i;
+                        if idx >= 0 && idx < w * h {
+                            pixels[idx as usize] = n;
+                        }
+                    }
+                }
+            }
+        }
+    }
     let mut surface = Surface::from_data(
-        &mut canvas.pixels,
+        &mut pixels,
         canvas.w,
         canvas.h,
         canvas.w,
@@ -132,28 +161,28 @@ pub fn main() -> exit::Result {
     let mut event_pump = sdl_context.event_pump()?;
     let (mut p_x, mut p_y) = (-1, -1);
     'running: loop {
+        if brot.res == INITIAL_RES {
+            brot.tx = Complex64 {
+                re: scale / (if brot.h < brot.w { brot.h } else { brot.w } as f64),
+                im: 0.,
+            };
+            brot.tn = tn
+                + Complex64 {
+                    re: -(brot.w as f64) / 2.,
+                    im: -(brot.h as f64) / 2.,
+                } * brot.tx;
+            brot.pixels.clear();
+            brot.pixels
+                .resize_with((brot.w * brot.h) as usize, Default::default);
+        }
+
+        canvas.set_draw_color(Color::RGB(0, 0, 0));
+        canvas.clear();
+
+        draw(&mut canvas, brot, p_x, p_y)?;
+
+        canvas.present();
         if brot.res > 0 {
-            if brot.res == INITIAL_RES {
-                brot.tx = Complex64 {
-                    re: scale / (if brot.h < brot.w { brot.h } else { brot.w } as f64),
-                    im: 0.,
-                };
-                brot.tn = tn
-                    + Complex64 {
-                        re: -(brot.w as f64) / 2.,
-                        im: -(brot.h as f64) / 2.,
-                    } * brot.tx;
-                brot.pixels.clear();
-                brot.pixels
-                    .resize_with((brot.w * brot.h) as usize, Default::default);
-            }
-
-            canvas.set_draw_color(Color::RGB(0, 0, 0));
-            canvas.clear();
-
-            draw(&mut canvas, brot, p_x, p_y)?;
-
-            canvas.present();
             brot.res -= 2;
         }
 
@@ -177,6 +206,8 @@ pub fn main() -> exit::Result {
                     brot.res = INITIAL_RES;
                 }
                 Event::MouseMotion {
+                    x,
+                    y,
                     xrel,
                     yrel,
                     mousestate,
@@ -186,23 +217,17 @@ pub fn main() -> exit::Result {
                         tn += Complex64::new(-xrel as f64, -yrel as f64) * brot.tx;
                         brot.res = INITIAL_RES;
                     }
+                    p_x = x;
+                    p_y = y;
                 }
                 Event::MouseWheel { which: 0, y: n, .. } => {
                     scale *= 1.5f64.powi(n);
                     brot.res = INITIAL_RES;
                 }
-                Event::MouseButtonUp {
-                    x, y, mouse_btn, ..
-                } => match mouse_btn {
-                    MouseButton::Left => {
-                        p_x = x;
-                        p_y = y;
-                        brot.res = INITIAL_RES;
-                    }
+                Event::MouseButtonUp { mouse_btn, .. } => match mouse_btn {
                     MouseButton::Right => {
                         p_x = -1;
                         p_y = -1;
-                        brot.res = INITIAL_RES;
                     }
                     _ => {}
                 },
