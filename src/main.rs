@@ -70,45 +70,36 @@ impl Image {
             } * self.tx;
     }
 
-    fn compute(&mut self, orbit: &mut Vec<Complex64>, p: Option<Complex64>) {
+    fn compute_orbit(&self, orbit: &mut Vec<Complex64>, c: Complex64) {
+        let mut z = c.clone();
+        orbit.push(c);
+        let mut m = z.norm_sqr();
+        let mut n = 255;
+        while m < DIV_LIMIT && n > 0 {
+            z = z * z + c;
+            m = z.norm_sqr();
+            n -= 1;
+            orbit.push(z.clone());
+        }
+    }
+
+    fn compute(&mut self) {
         let mut c = Complex64 { re: 0., im: 0. };
         let mut z = Complex64 { re: 0., im: 0. };
         let w = self.w as i32;
         let h = self.h as i32;
         let res = self.res;
-        let q = p.and_then(|p| self.transform_inv(p));
-        let (xrange, yrange) = if res > 0 {
-            (
-                ((res - 1) / 2..w).step_by(res as usize),
-                ((res - 1) / 2..h).step_by(res as usize),
-            )
-        } else if let Some(Complex64 { re, im }) = q {
-            let (x, y) = (re.round() as i32, im.round() as i32);
-            ((x..x + 1).step_by(1), (y..y + 1).step_by(1))
-        } else {
-            ((0..0).step_by(1), (0..0).step_by(1))
-        };
-        for y in yrange {
-            for x in xrange.clone() {
-                let record_orbit = if let Some(Complex64 { re, im }) = q {
-                    x == re.round() as i32 && y == im.round() as i32
-                } else {
-                    false
-                };
+        for y in ((res - 1) / 2..h).step_by(res as usize) {
+            for x in ((res - 1) / 2..w).step_by(res as usize) {
                 let idx = (y * w + x) as usize;
-                if record_orbit || self.pixels[idx] == 0 {
+                if self.pixels[idx] == 0 {
                     c.re = x as f64;
                     c.im = y as f64;
                     c = c * self.tx + self.tn;
-                    if record_orbit
-                        || !(4. * (c + 1.).norm() < 1. || {
-                            let (r, t) = (c - 0.25).to_polar();
-                            2. * r < 1. - t.cos()
-                        })
-                    {
-                        if record_orbit {
-                            orbit.push(c.clone());
-                        }
+                    if !(4. * (c + 1.).norm() < 1. || {
+                        let (r, t) = (c - 0.25).to_polar();
+                        2. * r < 1. - t.cos()
+                    }) {
                         z.clone_from(&c);
                         let mut m = z.norm_sqr();
                         let mut n = 255;
@@ -116,9 +107,6 @@ impl Image {
                             z = z * z + c;
                             m = z.norm_sqr();
                             n -= 1;
-                            if record_orbit {
-                                orbit.push(z.clone());
-                            }
                         }
                         if idx < self.pixels.len() {
                             self.pixels[idx] = n;
@@ -133,7 +121,12 @@ impl Image {
         let texture_creator = window.texture_creator();
         let mut orbit = Vec::<Complex64>::new();
 
-        self.compute(&mut orbit, p);
+        if self.res > 0 {
+            self.compute();
+        }
+        if let Some(c) = p {
+            self.compute_orbit(&mut orbit, c);
+        }
 
         let mut pixels = self.pixels.clone();
         if self.res > 1 {
