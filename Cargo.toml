@@ -13,5 +13,6 @@ categories = ["command-line-utilities", "graphics"]
 [dependencies]
 sdl2 = "0.33.0"
 num-complex = "0.2.4"
+num-traits = "0.2.11"
 [dependencies.exit]
 git = "https://github.com/au-phiware/exit"

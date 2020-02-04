@@ -1,23 +1,25 @@
 extern crate num_complex;
+extern crate num_traits;
 extern crate sdl2;
 
 use exit;
 use num_complex::Complex64;
+use num_traits::identities::Zero;
 use sdl2::{
     event::{Event, WindowEvent},
     keyboard::Keycode,
     mouse::MouseButton,
     pixels::{Color, Palette, PixelFormatEnum},
     rect::Point,
-    render,
+    render::Canvas,
     surface::Surface,
     video::Window,
 };
 
-const DIV_LIMIT: f64 = 200f64;
+const DIV_LIMIT: f64 = 100f64;
 const INITIAL_RES: i32 = 11;
 
-struct Canvas {
+struct Image {
     pixels: Vec<u8>,
     w: u32,
     h: u32,
@@ -26,164 +28,189 @@ struct Canvas {
     tn: Complex64,
 }
 
-fn compute(canvas: &mut Canvas, orbit: &mut Vec<Complex64>, p_x: i32, p_y: i32) {
-    let mut c = Complex64 { re: 0., im: 0. };
-    let mut z = Complex64 { re: 0., im: 0. };
-    let w = canvas.w as i32;
-    let h = canvas.h as i32;
-    let res = canvas.res;
-    let (xrange, yrange) = if res > 0 {
-        (
-            ((res - 1) / 2..w).step_by(res as usize),
-            ((res - 1) / 2..h).step_by(res as usize),
-        )
-    } else if p_x > 0 && p_y > 0 {
-        ((p_x..p_x + 1).step_by(1), (p_y..p_y + 1).step_by(1))
-    } else {
-        ((p_x..p_x).step_by(1), (p_y..p_y).step_by(1))
-    };
-    for y in yrange {
-        for x in xrange.clone() {
-            let record_orbit = x == p_x && y == p_y;
-            let idx = (y * w + x) as usize;
-            if record_orbit || canvas.pixels[idx] == 0 {
-                c.re = x as f64;
-                c.im = y as f64;
-                c = c * canvas.tx + canvas.tn;
-                if record_orbit
-                    || !(4. * (c + 1.).norm() < 1. || {
-                        let (r, t) = (c - 0.25).to_polar();
-                        2. * r < 1. - t.cos()
-                    })
-                {
-                    if record_orbit {
-                        orbit.push(c.clone());
-                    }
-                    z.clone_from(&c);
-                    let mut m = z.norm_sqr();
-                    let mut n = 255;
-                    while m < DIV_LIMIT && n > 0 {
-                        z = z * z + c;
-                        m = z.norm_sqr();
-                        n -= 1;
+impl Image {
+    fn new(w: u32, h: u32) -> Self {
+        Image {
+            pixels: Vec::new(),
+            w,
+            h,
+            res: INITIAL_RES,
+            tx: Complex64 { re: 0., im: 0. },
+            tn: Complex64 { re: 0., im: 0. },
+        }
+    }
+
+    fn clear(&mut self) {
+        self.pixels.clear();
+        self.pixels
+            .resize_with((self.w * self.h) as usize, Default::default);
+    }
+
+    fn transform(&self, x: Complex64) -> Complex64 {
+        x * self.tx + self.tn
+    }
+
+    fn transform_inv(&self, x: Complex64) -> Option<Complex64> {
+        if (&self.tx).is_zero() {
+            None
+        } else {
+            Some((x - self.tn) / self.tx)
+        }
+    }
+
+    fn set_transform(&mut self, scale: f64, tn: Complex64) {
+        self.tx = Complex64 {
+            re: scale / (if self.h < self.w { self.h } else { self.w } as f64),
+            im: 0.,
+        };
+        self.tn = tn
+            + Complex64 {
+                re: -(self.w as f64) / 2.,
+                im: -(self.h as f64) / 2.,
+            } * self.tx;
+    }
+
+    fn compute(&mut self, orbit: &mut Vec<Complex64>, p: Option<Complex64>) {
+        let mut c = Complex64 { re: 0., im: 0. };
+        let mut z = Complex64 { re: 0., im: 0. };
+        let w = self.w as i32;
+        let h = self.h as i32;
+        let res = self.res;
+        let q = p.and_then(|p| self.transform_inv(p));
+        let (xrange, yrange) = if res > 0 {
+            (
+                ((res - 1) / 2..w).step_by(res as usize),
+                ((res - 1) / 2..h).step_by(res as usize),
+            )
+        } else if let Some(Complex64 { re, im }) = q {
+            let (x, y) = (re.round() as i32, im.round() as i32);
+            ((x..x + 1).step_by(1), (y..y + 1).step_by(1))
+        } else {
+            ((0..0).step_by(1), (0..0).step_by(1))
+        };
+        for y in yrange {
+            for x in xrange.clone() {
+                let record_orbit = if let Some(Complex64 { re, im }) = q {
+                    x == re.round() as i32 && y == im.round() as i32
+                } else {
+                    false
+                };
+                let idx = (y * w + x) as usize;
+                if record_orbit || self.pixels[idx] == 0 {
+                    c.re = x as f64;
+                    c.im = y as f64;
+                    c = c * self.tx + self.tn;
+                    if record_orbit
+                        || !(4. * (c + 1.).norm() < 1. || {
+                            let (r, t) = (c - 0.25).to_polar();
+                            2. * r < 1. - t.cos()
+                        })
+                    {
                         if record_orbit {
-                            orbit.push(z.clone());
+                            orbit.push(c.clone());
                         }
-                    }
-                    if idx < canvas.pixels.len() {
-                        canvas.pixels[idx] = n;
-                    }
-                }
-            }
-        }
-    }
-}
-
-fn draw(
-    window: &mut render::Canvas<Window>,
-    canvas: &mut Canvas,
-    p_x: i32,
-    p_y: i32,
-) -> Result<(), String> {
-    let texture_creator = window.texture_creator();
-    let mut orbit = Vec::<Complex64>::new();
-
-    compute(canvas, &mut orbit, p_x, p_y);
-
-    let mut pixels = canvas.pixels.clone();
-    if canvas.res > 1 {
-        let w = canvas.w as i32;
-        let h = canvas.h as i32;
-        for x in ((canvas.res - 1) / 2..w).step_by(canvas.res as usize) {
-            for y in ((canvas.res - 1) / 2..h).step_by(canvas.res as usize) {
-                let n = canvas.pixels[(y * w + x) as usize];
-                for i in -((canvas.res - 1) / 2)..=((canvas.res - 1) / 2) {
-                    for j in -((canvas.res - 1) / 2)..=((canvas.res - 1) / 2) {
-                        let idx = (y + j) * w + x + i;
-                        if idx >= 0 && idx < w * h {
-                            pixels[idx as usize] = n;
+                        z.clone_from(&c);
+                        let mut m = z.norm_sqr();
+                        let mut n = 255;
+                        while m < DIV_LIMIT && n > 0 {
+                            z = z * z + c;
+                            m = z.norm_sqr();
+                            n -= 1;
+                            if record_orbit {
+                                orbit.push(z.clone());
+                            }
+                        }
+                        if idx < self.pixels.len() {
+                            self.pixels[idx] = n;
                         }
                     }
                 }
             }
         }
     }
-    let mut surface = Surface::from_data(
-        &mut pixels,
-        canvas.w,
-        canvas.h,
-        canvas.w,
-        PixelFormatEnum::Index8,
-    )?;
-    surface.set_palette(&Palette::with_colors(&PALETTE)?)?;
-    let texture = texture_creator
-        .create_texture_from_surface(surface)
-        .map_err(|e| e.to_string())?;
-    window.copy(&texture, None, None)?;
 
-    window.set_draw_color(PALETTE[255]);
-    window.draw_lines::<&[Point]>(
-        orbit
-            .iter()
-            .map(|c| {
-                let a = (c - canvas.tn) / canvas.tx;
-                Point::new(a.re as i32, a.im as i32)
-            })
-            .collect::<Vec<_>>()
-            .as_slice(),
-    )?;
+    fn draw(&mut self, window: &mut Canvas<Window>, p: Option<Complex64>) -> Result<(), String> {
+        let texture_creator = window.texture_creator();
+        let mut orbit = Vec::<Complex64>::new();
 
-    Result::Ok(())
+        self.compute(&mut orbit, p);
+
+        let mut pixels = self.pixels.clone();
+        if self.res > 1 {
+            let w = self.w as i32;
+            let h = self.h as i32;
+            let res = self.res;
+            for x in ((res - 1) / 2..w).step_by(res as usize) {
+                for y in ((res - 1) / 2..h).step_by(res as usize) {
+                    let n = pixels[(y * w + x) as usize];
+                    for i in -((res - 1) / 2)..=((res - 1) / 2) {
+                        for j in -((res - 1) / 2)..=((res - 1) / 2) {
+                            let idx = (y + j) * w + x + i;
+                            if idx >= 0 && idx < w * h {
+                                pixels[idx as usize] = n;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let mut surface =
+            Surface::from_data(&mut pixels, self.w, self.h, self.w, PixelFormatEnum::Index8)?;
+        surface.set_palette(&Palette::with_colors(&PALETTE)?)?;
+        let texture = texture_creator
+            .create_texture_from_surface(surface)
+            .map_err(|e| e.to_string())?;
+        window.copy(&texture, None, None)?;
+
+        window.set_draw_color(PALETTE[255]);
+        window.draw_lines::<&[Point]>(
+            orbit
+                .iter()
+                .filter_map(|&c| {
+                    self.transform_inv(c)
+                        .and_then(|a| Some(Point::new(a.re as i32, a.im as i32)))
+                })
+                .collect::<Vec<_>>()
+                .as_slice(),
+        )?;
+
+        Result::Ok(())
+    }
 }
 
 pub fn main() -> exit::Result {
     let sdl_context = sdl2::init()?;
     let video_subsystem = sdl_context.video()?;
 
-    let mut brot = &mut Canvas {
-        pixels: Vec::new(),
-        w: 600,
-        h: 600,
-        res: INITIAL_RES,
-        tx: Complex64::new(0., 0.),
-        tn: Complex64::new(0., 0.),
-    };
-    let mut tn = Complex64::new(0., 0.);
+    let mut image = &mut Image::new(600, 600);
+    let mut offset = Complex64 { re: 0., im: 0. };
     let mut scale = 4.;
+    let mut trace_orbit = false;
+    let mut pin_orbit = false;
 
     let window = video_subsystem
-        .window("Mandelbrot", brot.w, brot.h)
+        .window("Mandelbrot", image.w, image.h)
         .position_centered()
         .resizable()
         .build()?;
     let mut canvas = window.into_canvas().accelerated().build()?;
 
     let mut event_pump = sdl_context.event_pump()?;
-    let (mut p_x, mut p_y) = (-1, -1);
+    let mut p: Option<Complex64> = None;
     'running: loop {
-        if brot.res == INITIAL_RES {
-            brot.tx = Complex64 {
-                re: scale / (if brot.h < brot.w { brot.h } else { brot.w } as f64),
-                im: 0.,
-            };
-            brot.tn = tn
-                + Complex64 {
-                    re: -(brot.w as f64) / 2.,
-                    im: -(brot.h as f64) / 2.,
-                } * brot.tx;
-            brot.pixels.clear();
-            brot.pixels
-                .resize_with((brot.w * brot.h) as usize, Default::default);
+        if image.res == INITIAL_RES {
+            image.set_transform(scale, offset);
+            image.clear();
         }
 
         canvas.set_draw_color(Color::RGB(0, 0, 0));
         canvas.clear();
 
-        draw(&mut canvas, brot, p_x, p_y)?;
+        image.draw(&mut canvas, if trace_orbit { p } else { None })?;
 
         canvas.present();
-        if brot.res > 0 {
-            brot.res -= 2;
+        if image.res > 0 {
+            image.res -= 2;
         }
 
         for event in event_pump.poll_iter() {
@@ -193,6 +220,14 @@ pub fn main() -> exit::Result {
                     keycode: Some(Keycode::Escape),
                     ..
                 } => break 'running,
+                Event::KeyUp {
+                    keycode: Some(Keycode::T),
+                    ..
+                } => trace_orbit = !trace_orbit,
+                Event::KeyUp {
+                    keycode: Some(Keycode::P),
+                    ..
+                } => pin_orbit = !pin_orbit,
                 Event::Window {
                     win_event: WindowEvent::SizeChanged(width, height),
                     ..
@@ -201,9 +236,9 @@ pub fn main() -> exit::Result {
                     win_event: WindowEvent::Resized(width, height),
                     ..
                 } => {
-                    brot.w = width as u32;
-                    brot.h = height as u32;
-                    brot.res = INITIAL_RES;
+                    image.w = width as u32;
+                    image.h = height as u32;
+                    image.res = INITIAL_RES;
                 }
                 Event::MouseMotion {
                     x,
@@ -214,20 +249,26 @@ pub fn main() -> exit::Result {
                     ..
                 } => {
                     if mousestate.left() {
-                        tn += Complex64::new(-xrel as f64, -yrel as f64) * brot.tx;
-                        brot.res = INITIAL_RES;
+                        offset += Complex64 {
+                            re: -xrel as f64,
+                            im: -yrel as f64,
+                        } * image.tx;
+                        image.res = INITIAL_RES;
                     }
-                    p_x = x;
-                    p_y = y;
+                    if !pin_orbit {
+                        p = Some(image.transform(Complex64 {
+                            re: x as f64,
+                            im: y as f64,
+                        }));
+                    }
                 }
                 Event::MouseWheel { which: 0, y: n, .. } => {
                     scale *= 1.5f64.powi(n);
-                    brot.res = INITIAL_RES;
+                    image.res = INITIAL_RES;
                 }
                 Event::MouseButtonUp { mouse_btn, .. } => match mouse_btn {
                     MouseButton::Right => {
-                        p_x = -1;
-                        p_y = -1;
+                        p = None;
                     }
                     _ => {}
                 },

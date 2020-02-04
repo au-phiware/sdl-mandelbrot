@@ -29,7 +29,7 @@ mkRustCrate rec {
   src = ./.;
   doCheck = true;
   buildInputs = [ SDL2 ];
-  dependencies = [ rust_sdl2 num_complex exit ];
+  dependencies = [ rust_sdl2 num_complex num_traits exit ];
   buildDependencies = [];
 
   rust_sdl2 = mkRustCrate rec {
