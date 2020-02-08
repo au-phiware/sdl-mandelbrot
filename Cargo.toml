@@ -1,6 +1,6 @@
 [package]
 name = "sdl-mandelbrot"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Corin Lawson <corin@phiware.com.au>"]
 edition = "2018"
 license = "MIT"
@@ -14,5 +14,4 @@ categories = ["command-line-utilities", "graphics"]
 sdl2 = "0.33.0"
 num-complex = "0.2.4"
 num-traits = "0.2.11"
-[dependencies.exit]
-git = "https://github.com/au-phiware/exit"
+exit.git = "https://github.com/au-phiware/exit"
