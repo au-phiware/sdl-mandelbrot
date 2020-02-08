@@ -39,6 +39,7 @@ rec {
         (crates."exit"."${deps."sdl_mandelbrot"."0.1.0"."exit"}" deps)
         (cratesIO.crates."num_complex"."${deps."sdl_mandelbrot"."0.1.0"."num_complex"}" deps)
         (cratesIO.crates."num_traits"."${deps."sdl_mandelbrot"."0.1.0"."num_traits"}" deps)
+        (cratesIO.crates."palette"."${deps."sdl_mandelbrot"."0.1.0"."palette"}" deps)
         (cratesIO.crates."sdl2"."${deps."sdl_mandelbrot"."0.1.0"."sdl2"}" deps)
       ]);
     };
@@ -46,12 +47,14 @@ rec {
       exit."${deps.sdl_mandelbrot."0.1.0".exit}".default = true;
       num_complex."${deps.sdl_mandelbrot."0.1.0".num_complex}".default = true;
       num_traits."${deps.sdl_mandelbrot."0.1.0".num_traits}".default = true;
+      palette."${deps.sdl_mandelbrot."0.1.0".palette}".default = true;
       sdl2."${deps.sdl_mandelbrot."0.1.0".sdl2}".default = true;
       sdl_mandelbrot."0.1.0".default = (f.sdl_mandelbrot."0.1.0".default or true);
     }) [
       (f: if deps."sdl_mandelbrot"."0.1.0" ? "exit" then features_.exit."${deps."sdl_mandelbrot"."0.1.0"."exit" or ""}" deps f else f)
       (f: if deps."sdl_mandelbrot"."0.1.0" ? "num_complex" then cratesIO.features_.num_complex."${deps."sdl_mandelbrot"."0.1.0"."num_complex" or ""}" deps f else f)
       (f: if deps."sdl_mandelbrot"."0.1.0" ? "num_traits" then cratesIO.features_.num_traits."${deps."sdl_mandelbrot"."0.1.0"."num_traits" or ""}" deps f else f)
+      (f: if deps."sdl_mandelbrot"."0.1.0" ? "palette" then cratesIO.features_.palette."${deps."sdl_mandelbrot"."0.1.0"."palette" or ""}" deps f else f)
       (f: if deps."sdl_mandelbrot"."0.1.0" ? "sdl2" then cratesIO.features_.sdl2."${deps."sdl_mandelbrot"."0.1.0"."sdl2" or ""}" deps f else f)
     ];
 
@@ -69,10 +72,21 @@ rec {
 
   sdl_mandelbrot = crates_io.crates.sdl_mandelbrot."0.1.0" deps;
   __all = [ (sdl_mandelbrot {}) ];
+  deps.approx."0.3.2" = {
+    num_traits = "default";
+  };
   deps.autocfg."1.0.0" = {};
   deps.bitflags."1.2.1" = {};
+  deps.c2_chacha."0.2.3" = {
+    ppv_lite86 = "default";
+  };
   deps.cfg_if."0.1.10" = {};
   deps.exit."0.1.0" = {};
+  deps.getrandom."0.1.14" = {
+    cfg_if = "default";
+    wasi = "default";
+    libc = "default";
+  };
   deps.lazy_static."1.4.0" = {};
   deps.libc."0.2.66" = {};
   deps.num_complex."0.2.4" = {
@@ -82,10 +96,64 @@ rec {
   deps.num_traits."0.2.11" = {
     autocfg = "default";
   };
+  deps.palette."0.5.0" = {
+    approx = "default";
+    num_traits = "default";
+    palette_derive = "default";
+    phf = "default";
+    phf_codegen = "default";
+  };
+  deps.palette_derive."0.5.0" = {
+    proc_macro2 = "default";
+    quote = "default";
+    syn = "default";
+  };
+  deps.phf."0.8.0" = {
+    phf_shared = "default";
+  };
+  deps.phf_codegen."0.8.0" = {
+    phf_generator = "default";
+    phf_shared = "default";
+  };
+  deps.phf_generator."0.8.0" = {
+    phf_shared = "default";
+    rand = "default";
+  };
+  deps.phf_shared."0.8.0" = {
+    siphasher = "default";
+  };
+  deps.ppv_lite86."0.2.6" = {};
+  deps.proc_macro2."1.0.8" = {
+    unicode_xid = "default";
+  };
+  deps.quote."1.0.2" = {
+    proc_macro2 = "default";
+  };
+  deps.rand."0.7.3" = {
+    rand_core = "default";
+    rand_pcg = "default";
+    rand_chacha = "default";
+    rand_hc = "default";
+    libc = "default";
+  };
+  deps.rand_chacha."0.2.1" = {
+    c2_chacha = "default";
+    rand_core = "default";
+  };
+  deps.rand_core."0.5.1" = {
+    getrandom = "default";
+  };
+  deps.rand_hc."0.2.0" = {
+    rand_core = "default";
+  };
+  deps.rand_pcg."0.2.1" = {
+    rand_core = "default";
+  };
   deps.sdl_mandelbrot."0.1.0" = {
     exit = "default";
     num_complex = "default";
     num_traits = "default";
+    palette = "default";
     sdl2 = "default";
   };
   deps.sdl2."0.33.0" = {
@@ -98,4 +166,12 @@ rec {
     libc = "default";
     cfg_if = "default";
   };
+  deps.siphasher."0.3.1" = {};
+  deps.syn."1.0.14" = {
+    proc_macro2 = "default";
+    quote = "default";
+    unicode_xid = "default";
+  };
+  deps.unicode_xid."0.2.0" = {};
+  deps.wasi."0.9.0+wasi-snapshot-preview1" = {};
 }

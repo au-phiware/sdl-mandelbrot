@@ -1,6 +1,6 @@
 [package]
 name = "sdl-mandelbrot"
-version = "0.1.1"
+version = "0.2.0"
 authors = ["Corin Lawson <corin@phiware.com.au>"]
 edition = "2018"
 license = "MIT"
@@ -15,3 +15,4 @@ sdl2 = "0.33.0"
 num-complex = "0.2.4"
 num-traits = "0.2.11"
 exit.git = "https://github.com/au-phiware/exit"
+palette = "0.5.0"
