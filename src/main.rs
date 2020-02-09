@@ -22,7 +22,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-const DIV_LIMIT: f64 = 100f64;
+const DIV_LIMIT: f64 = 400f64;
+const FIXED_THRESHOLD: u32 = 2540;
 const INITIAL_RES: i32 = 11;
 const FRAME_SPACER: Duration = Duration::from_millis(30);
 
@@ -115,14 +116,18 @@ impl Image {
                     }) {
                         z.clone_from(&c);
                         let mut m = z.norm_sqr();
-                        let mut n = 254;
-                        while m < DIV_LIMIT && n > 0 {
+                        let mut n: u32 = 0;
+                        while m < DIV_LIMIT && n < FIXED_THRESHOLD {
                             z = z * z + c;
                             m = z.norm_sqr();
-                            n -= 1;
+                            n += 1;
                         }
                         if idx < self.pixels.len() {
-                            self.pixels[idx] = n;
+                            self.pixels[idx] = if n >= FIXED_THRESHOLD {
+                                255
+                            } else {
+                                (n % 254 + 1) as u8
+                            };
                         }
                     }
                 }
@@ -164,7 +169,7 @@ impl Image {
             .map_err(|e| e.to_string())?;
         window.copy(&texture, None, None)?;
 
-        window.set_draw_color(PALETTE[255]);
+        window.set_draw_color(PALETTE[0]);
         if self.c != p {
             self.c = p;
             self.compute_orbit();
