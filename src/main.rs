@@ -42,6 +42,24 @@ struct Image {
     palette: [Color; 256],
 }
 
+fn compute_orbit(c: Complex64, mut orbit: Option<&mut Vec<Complex64>>) -> Option<u32> {
+    let mut z = c.clone();
+    let mut m = z.norm_sqr();
+    let mut n = 0;
+    while m < DIV_LIMIT {
+        z = z * z + c;
+        m = z.norm_sqr();
+        n += 1;
+        if let Some(ref mut orbit) = orbit {
+            orbit.push(z.clone());
+        }
+        if n == FIXED_THRESHOLD {
+            return None;
+        }
+    }
+    Some(n)
+}
+
 impl Image {
     fn new(w: u32, h: u32) -> Self {
         Image {
@@ -99,26 +117,8 @@ impl Image {
         self.tx *= Complex64 { re: scale, im: 0. };
     }
 
-    fn compute_orbit(&mut self) {
-        self.orbit.clear();
-        if let Some(c) = self.c {
-            let mut z = c.clone();
-            self.orbit.push(Complex64 { re: 0., im: 0. });
-            self.orbit.push(c);
-            let mut m = z.norm_sqr();
-            let mut n = 255;
-            while m < DIV_LIMIT && n > 0 {
-                z = z * z + c;
-                m = z.norm_sqr();
-                n -= 1;
-                self.orbit.push(z.clone());
-            }
-        }
-    }
-
     fn compute(&mut self) {
         let mut c = Complex64 { re: 0., im: 0. };
-        let mut z = Complex64 { re: 0., im: 0. };
         let w = self.w as i32;
         let h = self.h as i32;
         let res = self.res;
@@ -133,20 +133,9 @@ impl Image {
                         let (r, t) = (c - 0.25).to_polar();
                         2. * r < 1. - t.cos()
                     }) {
-                        z.clone_from(&c);
-                        let mut m = z.norm_sqr();
-                        let mut n: u32 = 0;
-                        while m < DIV_LIMIT && n < FIXED_THRESHOLD {
-                            z = z * z + c;
-                            m = z.norm_sqr();
-                            n += 1;
-                        }
                         if idx < self.pixels.len() {
-                            self.pixels[idx] = if n >= FIXED_THRESHOLD {
-                                255
-                            } else {
-                                (n % 254 + 1) as u8
-                            };
+                            let n = compute_orbit(c, None);
+                            self.pixels[idx] = n.map(|n| (n % 254 + 1) as u8).unwrap_or(255);
                         }
                     }
                 }
@@ -191,7 +180,12 @@ impl Image {
         window.set_draw_color(Color::RGB(0xff, 0xff, 0xff));
         if self.c != p {
             self.c = p;
-            self.compute_orbit();
+            if let Some(p) = p {
+                self.orbit.clear();
+                self.orbit.push(Complex64 { re: 0., im: 0. });
+                self.orbit.push(p);
+                compute_orbit(p, Some(&mut self.orbit));
+            }
         }
         if self.c.is_some() {
             window.draw_lines::<&[Point]>(
