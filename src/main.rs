@@ -23,7 +23,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-const DIV_LIMIT: f64 = 100f64;
+const DIV_LIMIT: f64 = 400f64;
+const FIXED_THRESHOLD: u32 = 2540;
 const INITIAL_RES: i32 = 11;
 const FRAME_SPACER: Duration = Duration::from_millis(30);
 
@@ -57,17 +58,15 @@ impl Image {
             palette: {
                 let mut i = 0;
                 arr![{
-                    i += 1;
-                    let c = if i == 1 {
-                        Color::RGB(0, 0, 0)
-                    } else if i < 256 {
-                        let lch = Lch::new(75., 100., (i - 2) as f32 * 360. / 254.);
+                    let c = if 0 < i && i < 255 {
+                        let lch = Lch::new(75., 100., i as f32 * 360. / 254.);
                         let rgb: Rgb = Srgb::from_linear(lch.into());
                         let parts: [u8; 3] = rgb.into_format().into_raw();
                         Color::RGB(parts[0], parts[1], parts[2])
                     } else {
-                        Color::RGB(0xff, 0xff, 0xff)
+                        Color::RGB(0, 0, 0)
                     };
+                    i += 1;
                     c
                 }; 256]
             },
@@ -136,14 +135,18 @@ impl Image {
                     }) {
                         z.clone_from(&c);
                         let mut m = z.norm_sqr();
-                        let mut n = 254;
-                        while m < DIV_LIMIT && n > 0 {
+                        let mut n: u32 = 0;
+                        while m < DIV_LIMIT && n < FIXED_THRESHOLD {
                             z = z * z + c;
                             m = z.norm_sqr();
-                            n -= 1;
+                            n += 1;
                         }
                         if idx < self.pixels.len() {
-                            self.pixels[idx] = n;
+                            self.pixels[idx] = if n >= FIXED_THRESHOLD {
+                                255
+                            } else {
+                                (n % 254 + 1) as u8
+                            };
                         }
                     }
                 }
