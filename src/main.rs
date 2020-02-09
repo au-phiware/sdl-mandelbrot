@@ -17,9 +17,14 @@ use sdl2::{
     surface::Surface,
     video::Window,
 };
+use std::{
+    thread,
+    time::{Duration, Instant},
+};
 
 const DIV_LIMIT: f64 = 100f64;
 const INITIAL_RES: i32 = 11;
+const FRAME_SPACER: Duration = Duration::from_millis(30);
 
 struct Image {
     pixels: Vec<u8>,
@@ -218,6 +223,7 @@ pub fn main() -> exit::Result {
     let mut event_pump = sdl_context.event_pump()?;
     let mut p: Option<Complex64> = None;
     'running: loop {
+        let start = Instant::now();
         if image.res == INITIAL_RES {
             image.clear();
         }
@@ -327,6 +333,15 @@ pub fn main() -> exit::Result {
                     _ => {}
                 },
                 _ => {}
+            }
+            thread::yield_now();
+        }
+
+        if start.elapsed() < FRAME_SPACER {
+            thread::yield_now();
+            let space = FRAME_SPACER - start.elapsed();
+            if space.as_millis() > 0 {
+                thread::sleep(space);
             }
         }
     }
