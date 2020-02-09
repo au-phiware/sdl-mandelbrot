@@ -3,10 +3,11 @@ extern crate num_traits;
 extern crate palette;
 extern crate sdl2;
 
+use arr_macro::arr;
 use exit;
 use num_complex::Complex64;
 use num_traits::identities::Zero;
-use palette::{rgb::Rgb, Lch};
+use palette::{rgb::Rgb, Lch, Pixel, Srgb};
 use sdl2::{
     event::{Event, WindowEvent},
     keyboard::Keycode,
@@ -31,6 +32,8 @@ struct Image {
 
     orbit: Vec<Complex64>,
     c: Option<Complex64>,
+
+    palette: [Color; 256],
 }
 
 impl Image {
@@ -45,6 +48,24 @@ impl Image {
 
             orbit: Vec::<Complex64>::new(),
             c: None,
+
+            palette: {
+                let mut i = 0;
+                arr![{
+                    i += 1;
+                    let c = if i == 1 {
+                        Color::RGB(0, 0, 0)
+                    } else if i < 256 {
+                        let lch = Lch::new(75., 100., (i - 2) as f32 * 360. / 254.);
+                        let rgb: Rgb = Srgb::from_linear(lch.into());
+                        let parts: [u8; 3] = rgb.into_format().into_raw();
+                        Color::RGB(parts[0], parts[1], parts[2])
+                    } else {
+                        Color::RGB(0xff, 0xff, 0xff)
+                    };
+                    c
+                }; 256]
+            },
         }
     }
 
@@ -153,13 +174,13 @@ impl Image {
         }
         let mut surface =
             Surface::from_data(&mut pixels, self.w, self.h, self.w, PixelFormatEnum::Index8)?;
-        surface.set_palette(&Palette::with_colors(&PALETTE)?)?;
+        surface.set_palette(&Palette::with_colors(&self.palette)?)?;
         let texture = texture_creator
             .create_texture_from_surface(surface)
             .map_err(|e| e.to_string())?;
         window.copy(&texture, None, None)?;
 
-        window.set_draw_color(PALETTE[255]);
+        window.set_draw_color(Color::RGB(0xff, 0xff, 0xff));
         if self.c != p {
             self.c = p;
             self.compute_orbit();
@@ -182,20 +203,6 @@ impl Image {
 }
 
 pub fn main() -> exit::Result {
-    PALETTE[0] = Color::RGBA(0, 0, 0, 0xFF);
-    for i in 1..255 {
-        PALETTE[i] = {
-            let rgb: Rgb = Lch::new(75., 100., (i - 1) as f32 * 360. / 254.).into();
-            let (r, g, b) = rgb.into();
-            Color::RGBA(
-                (0xff as f32 * r) as u8,
-                (0xff as f32 * g) as u8,
-                (0xff as f32 * b) as u8,
-                0xFF,
-            )
-        }
-    }
-    PALETTE[255] = Color::RGBA(0xff, 0xff, 0xff, 0xFF);
     let sdl_context = sdl2::init()?;
     let video_subsystem = sdl_context.video()?;
 
@@ -333,10 +340,3 @@ pub fn main() -> exit::Result {
 
     exit::Result::Ok
 }
-
-const PALETTE: [Color; 256] = [Color {
-    r: 0,
-    g: 0,
-    b: 0,
-    a: 0,
-}; 256];
