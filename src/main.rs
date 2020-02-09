@@ -19,12 +19,13 @@ use sdl2::{
     video::Window,
 };
 use std::{
-    thread,
+    sync::mpsc::{channel, SendError},
+    thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
 
 const DIV_LIMIT: f64 = 400f64;
-const FIXED_THRESHOLD: u32 = 2540;
+const FIXED_THRESHOLD: u32 = 20000;
 const INITIAL_RES: i32 = 11;
 const FRAME_SPACER: Duration = Duration::from_millis(30);
 
@@ -118,28 +119,59 @@ impl Image {
     }
 
     fn compute(&mut self) {
-        let mut c = Complex64 { re: 0., im: 0. };
-        let w = self.w as i32;
-        let h = self.h as i32;
-        let res = self.res;
-        for y in ((res - 1) / 2..h).step_by(res as usize) {
-            for x in ((res - 1) / 2..w).step_by(res as usize) {
-                let idx = (y * w + x) as usize;
-                if self.pixels[idx] == 0 {
-                    c.re = x as f64;
-                    c.im = y as f64;
-                    c = c * self.tx + self.tn;
-                    if !(4. * (c + 1.).norm() < 1. || {
-                        let (r, t) = (c - 0.25).to_polar();
-                        2. * r < 1. - t.cos()
-                    }) {
-                        if idx < self.pixels.len() {
-                            let n = compute_orbit(c, None);
-                            self.pixels[idx] = n.map(|n| (n % 254 + 1) as u8).unwrap_or(255);
+        const N: usize = 32;
+        let (results_tx, results_rx) = channel();
+        let (mut workers, mut worker_handles) = (Vec::with_capacity(N), Vec::with_capacity(N));
+        for _ in 0..N {
+            let results = results_tx.clone();
+            let (worker, port) = channel();
+            let handle: JoinHandle<Result<_, SendError<_>>> = thread::spawn(move || {
+                while let Ok((idx, c)) = port.recv() {
+                    let n = compute_orbit(c, None);
+                    results.send((idx, n))?;
+                }
+                Ok(())
+            });
+            workers.push(worker);
+            worker_handles.push(handle);
+        }
+        drop(results_tx);
+
+        {
+            let mut c = Complex64 { re: 0., im: 0. };
+            let w = self.w as i32;
+            let h = self.h as i32;
+            let res = self.res;
+            let mut i = 0;
+            for y in ((res - 1) / 2..h).step_by(res as usize) {
+                for x in ((res - 1) / 2..w).step_by(res as usize) {
+                    let idx = (y * w + x) as usize;
+                    if self.pixels[idx] == 0 {
+                        c.re = x as f64;
+                        c.im = y as f64;
+                        c = c * self.tx + self.tn;
+                        if !(4. * (c + 1.).norm() < 1. || {
+                            let (r, t) = (c - 0.25).to_polar();
+                            2. * r < 1. - t.cos()
+                        }) {
+                            if idx < self.pixels.len() {
+                                workers[i % N].send((idx, c)).unwrap();
+                                i = i.wrapping_add(1);
+                            }
+                        } else {
+                            self.pixels[idx] = 255;
                         }
                     }
                 }
             }
+        }
+        drop(workers);
+
+        while let Ok((idx, n)) = results_rx.recv() {
+            self.pixels[idx] = n.map(|n| (n % 254 + 1) as u8).unwrap_or(255);
+        }
+        for w in worker_handles.into_iter() {
+            w.join().unwrap().unwrap();
         }
     }
 
