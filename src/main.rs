@@ -1,11 +1,15 @@
+#![feature(type_ascription)]
+
 extern crate num_complex;
 extern crate num_traits;
 extern crate palette;
 extern crate sdl2;
 
 use crate::image::*;
+use crate::projection::{MutProjector, Projected, Projector, Source, Value::*};
+use core::f64::consts::PI;
 use exit;
-use num_complex::Complex64;
+use num_complex::Complex;
 use sdl2::{
     event::{Event, WindowEvent},
     keyboard::Keycode,
@@ -19,6 +23,8 @@ use std::{
 
 mod compute;
 mod image;
+#[macro_use]
+mod projection;
 
 const FRAME_SPACER: Duration = Duration::from_millis(15);
 
@@ -32,8 +38,18 @@ pub fn main() -> exit::Result {
     let mut locus_y = 0;
     let mut trace_orbit = false;
     let mut pin_orbit = false;
-    image.set_scale(2. / 300., Complex64 { re: 0., im: 0. });
-    image.set_translate(Complex64 { re: -2., im: -2. });
+    image.projection.set_transform(Absolute(
+        Complex::<Source<f64>> {
+            re: Source(-2. / 300.),
+            im: Source(0.),
+        } * Complex::<Source<f64>>::from_polar(&Source(1.), &Source(PI)),
+    ));
+    image
+        .projection
+        .set_translate(Absolute(Complex::<Source<f64>> {
+            re: Source(-2.),
+            im: Source(-2.),
+        }));
 
     let window = video_subsystem
         .window("Mandelbrot", size.w, size.h)
@@ -43,7 +59,7 @@ pub fn main() -> exit::Result {
     let mut canvas = window.into_canvas().accelerated().build()?;
 
     let mut event_pump = sdl_context.event_pump()?;
-    let mut p: Option<Complex64> = None;
+    let mut p: Option<Complex<Source<f64>>> = None;
     'running: loop {
         let start = Instant::now();
         {
@@ -74,30 +90,30 @@ pub fn main() -> exit::Result {
                     ..
                 } => pin_orbit = !pin_orbit,
                 Event::Window {
-                    win_event: WindowEvent::SizeChanged(width, height),
-                    ..
-                }
-                | Event::Window {
                     win_event: WindowEvent::Resized(width, height),
                     ..
                 } => {
-                    let preserve_width = (width as f64) / (size.w as f64);
-                    let preserve_height = (height as f64) / (size.h as f64);
-                    image.set_scale(
-                        1. / if preserve_width < preserve_height {
-                            size.w = width as u32;
-                            size.h = (size.h as f64 * preserve_width) as u32;
-                            preserve_width
-                        } else {
-                            size.w = (size.w as f64 * preserve_height) as u32;
-                            size.h = height as u32;
-                            preserve_height
-                        },
-                        image.scale(Complex64 {
-                            re: (size.w / 2) as f64,
-                            im: (size.h / 2) as f64,
-                        }),
-                    );
+                    let preserve_width = (size.w as f64) / (width as f64);
+                    let preserve_height = (size.h as f64) / (height as f64);
+                    let scale = if preserve_width < preserve_height {
+                        size.w = (size.w as f64 * preserve_height) as u32;
+                        size.h = height as u32;
+                        preserve_height
+                    } else {
+                        size.w = width as u32;
+                        size.h = (size.h as f64 * preserve_width) as u32;
+                        preserve_width
+                    };
+                    image.projection.set_transform(Relative(
+                        Source(Complex { re: scale, im: 0. }).into(): Complex<Source<_>>,
+                    ));
+                    let offset = Complex {
+                        re: (width as f64) - (image.size().w as f64) / scale,
+                        im: (height as f64) - (image.size().h as f64) / scale,
+                    } / -2.;
+                    image
+                        .projection
+                        .set_translate(Relative(Projected(offset).into(): Complex<Projected<_>>));
                     image.set_size(width as u32, height as u32);
                 }
                 Event::MouseMotion {
@@ -112,27 +128,34 @@ pub fn main() -> exit::Result {
                     locus_y = y;
                     if mousestate.left() {
                         size = image.size();
-                        image.set_translate(image.scale(Complex64 {
-                            re: -xrel as f64,
-                            im: -yrel as f64,
-                        }));
+                        image
+                            .projection
+                            .set_translate(Relative(Complex::<Projected<f64>> {
+                                re: Projected(-xrel as f64),
+                                im: Projected(-yrel as f64),
+                            }));
                     }
                     if !pin_orbit {
-                        p = Some(image.transform(Complex64 {
-                            re: x as f64,
-                            im: y as f64,
+                        p = Some(image.projection.transform(Complex::<Projected<f64>> {
+                            re: Projected(x as f64),
+                            im: Projected(y as f64),
                         }));
                     }
                 }
                 Event::MouseWheel { which: 0, y: n, .. } => {
                     size = image.size();
-                    image.set_scale(
-                        1.1f64.powi(n),
-                        Complex64 {
-                            re: locus_x as f64,
-                            im: locus_y as f64,
-                        },
-                    );
+                    let focus = Complex::<Projected<f64>> {
+                        re: Projected(locus_x as f64),
+                        im: Projected(locus_y as f64),
+                    };
+                    image.projection.set_translate(Relative(focus));
+                    image
+                        .projection
+                        .set_transform(Relative(Complex::<Source<f64>> {
+                            re: Source(1.1f64.powi(n)),
+                            im: Source(0.),
+                        }));
+                    image.projection.set_translate(Relative(-focus));
                 }
                 Event::MouseButtonUp { mouse_btn, .. } => match mouse_btn {
                     MouseButton::Right => {

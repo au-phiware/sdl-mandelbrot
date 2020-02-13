@@ -1,7 +1,8 @@
 use crate::compute::compute_orbit;
+use crate::projection::*;
 use arr_macro::arr;
-use num_complex::Complex64;
-use num_traits::identities::Zero;
+use num_complex::Complex;
+use num_traits::{AsPrimitive, Float};
 use palette::{rgb::Rgb, Lch, Pixel, Srgb};
 use sdl2::{
     pixels::{Color, Palette, PixelFormatEnum},
@@ -24,14 +25,15 @@ pub struct Size {
 }
 
 pub struct Image {
-    pixels: Vec<u8>,
+    pub projection: Projection<Complex<Source<f64>>>,
     size: Size,
-    res: i32,
-    tx: Complex64,
-    tn: Complex64,
+    drawn_state: Option<(Projection<Complex<Source<f64>>>, Size)>,
 
-    orbit: Vec<Complex64>,
-    c: Option<Complex64>,
+    pixels: Vec<u8>,
+    res: i32,
+
+    orbit: Vec<Complex<Source<f64>>>,
+    c: Option<Complex<Source<f64>>>,
 
     palette: [Color; 256],
 }
@@ -42,10 +44,10 @@ impl Image {
             pixels: Vec::new(),
             size,
             res: INITIAL_RES,
-            tx: Complex64 { re: 1., im: 0. },
-            tn: Complex64 { re: 0., im: 0. },
+            projection: Projection::<Complex<Source<f64>>>::default(),
+            drawn_state: None,
 
-            orbit: Vec::<Complex64>::new(),
+            orbit: Vec::<Complex<Source<f64>>>::new(),
             c: None,
 
             palette: {
@@ -72,18 +74,6 @@ impl Image {
             .resize_with((self.size.w * self.size.h) as usize, Default::default);
     }
 
-    pub fn transform(&self, x: Complex64) -> Complex64 {
-        x * self.tx + self.tn
-    }
-
-    pub fn transform_inv(&self, x: Complex64) -> Option<Complex64> {
-        if (&self.tx).is_zero() {
-            None
-        } else {
-            Some((x - self.tn) / self.tx)
-        }
-    }
-
     pub fn size(&self) -> Size {
         self.size
     }
@@ -91,23 +81,6 @@ impl Image {
     pub fn set_size(&mut self, width: u32, height: u32) {
         self.size.w = width;
         self.size.h = height;
-        self.res = INITIAL_RES;
-    }
-
-    pub fn set_translate(&mut self, tn: Complex64) {
-        self.tn += tn;
-        self.res = INITIAL_RES;
-    }
-
-    pub fn scale(&self, c: Complex64) -> Complex64 {
-        c * self.tx.norm()
-    }
-
-    pub fn set_scale(&mut self, scale: f64, focus: Complex64) {
-        self.set_translate(-focus);
-        self.tx *= Complex64 { re: scale, im: 0. };
-        self.set_translate(focus);
-        self.res = INITIAL_RES;
     }
 
     pub fn compute(&mut self) {
@@ -130,7 +103,6 @@ impl Image {
         drop(results_tx);
 
         {
-            let mut c = Complex64 { re: 0., im: 0. };
             let w = self.size.w as i32;
             let h = self.size.h as i32;
             let res = self.res;
@@ -139,12 +111,13 @@ impl Image {
                 for x in ((res - 1) / 2..w).step_by(res as usize) {
                     let idx = (y * w + x) as usize;
                     if self.pixels[idx] == 0 {
-                        c.re = x as f64;
-                        c.im = y as f64;
-                        c = c * self.tx + self.tn;
-                        if !(4. * (c + 1.).norm() < 1. || {
-                            let (r, t) = (c - 0.25).to_polar();
-                            2. * r < 1. - t.cos()
+                        let c = self.projection.transform(Complex::<Projected<f64>> {
+                            re: Projected(x as f64),
+                            im: Projected(y as f64),
+                        });
+                        if !(Source(4.) * (c + Source(1.)).norm() < Source(1.) || {
+                            let (r, t) = (c - Source(0.25)).to_polar();
+                            Source(2.) * r < Source(1.) - t.cos()
                         }) {
                             if idx < self.pixels.len() {
                                 workers[i % N].send((idx, c)).unwrap();
@@ -167,24 +140,31 @@ impl Image {
         }
     }
 
-    pub fn needs_draw(&self, p: Option<Complex64>) -> bool {
-        self.res > 0 || p != self.c
+    pub fn needs_draw(&self, p: Option<Complex<Source<f64>>>) -> bool {
+        self.res > 0 || p != self.c || self.drawn_state != Some((self.projection, self.size))
     }
 
     pub fn draw(
         &mut self,
         window: &mut Canvas<Window>,
-        p: Option<Complex64>,
+        p: Option<Complex<Source<f64>>>,
     ) -> Result<(), String> {
         let texture_creator = window.texture_creator();
 
-        if self.res == INITIAL_RES {
+        // Check if pixels can be reused
+        if self.drawn_state != Some((self.projection, self.size)) {
             self.clear();
-        } else if self.res > 0 {
+            self.res = INITIAL_RES;
+            self.drawn_state = Some((self.projection, self.size));
+        }
+        // Calculate pixel values
+        if self.res > 0 {
             self.compute();
         }
 
+        // Prepare pixels for texture
         let mut pixels = self.pixels.clone();
+        // Pixelate over missing pixels
         if self.res > 1 {
             let w = self.size.w as i32;
             let h = self.size.h as i32;
@@ -203,6 +183,13 @@ impl Image {
                 }
             }
         }
+
+        // Increase detail
+        if self.res > 0 {
+            self.res -= 2;
+        }
+
+        // Prepare surface and copy to window
         let mut surface = Surface::from_data(
             &mut pixels,
             self.size.w,
@@ -216,12 +203,13 @@ impl Image {
             .map_err(|e| e.to_string())?;
         window.copy(&texture, None, None)?;
 
+        // Draw orbit trace
         window.set_draw_color(Color::RGB(0xff, 0xff, 0xff));
         if self.c != p {
             self.c = p;
             if let Some(p) = p {
                 self.orbit.clear();
-                self.orbit.push(Complex64 { re: 0., im: 0. });
+                self.orbit.push(Complex::<Source<f64>>::default());
                 self.orbit.push(p);
                 compute_orbit(p, Some(&mut self.orbit));
             }
@@ -231,16 +219,16 @@ impl Image {
                 self.orbit
                     .iter()
                     .filter_map(|&c| {
-                        self.transform_inv(c)
-                            .and_then(|a| Some(Point::new(a.re as i32, a.im as i32)))
+                        let p: Complex<Projected<f64>> = self.projection.transform(c);
+                        if p.is_finite() {
+                            Some(Point::new(p.re.as_(), p.im.as_()))
+                        } else {
+                            None
+                        }
                     })
                     .collect::<Vec<_>>()
                     .as_slice(),
             )?;
-        }
-
-        if self.res > 0 {
-            self.res -= 2;
         }
 
         Result::Ok(())
