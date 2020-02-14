@@ -1,7 +1,10 @@
 #![feature(type_ascription)]
+#![feature(step_trait)]
 
 extern crate num_complex;
 extern crate num_traits;
+#[macro_use]
+extern crate num_derive;
 extern crate palette;
 extern crate sdl2;
 

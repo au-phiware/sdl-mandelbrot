@@ -2,7 +2,10 @@ use self::Value::*;
 use num_complex::Complex;
 use num_traits::float::FloatCore;
 use num_traits::*;
-use std::ops::{AddAssign, DivAssign, MulAssign, Neg, RemAssign, SubAssign};
+use std::{
+    convert::TryInto,
+    ops::{AddAssign, DivAssign, MulAssign, Neg, RemAssign, SubAssign},
+};
 
 pub trait Projector<FromValue, ToValue> {
     fn transform(&self, v: FromValue) -> ToValue;
@@ -10,6 +13,16 @@ pub trait Projector<FromValue, ToValue> {
     fn translate(&self, v: FromValue) -> ToValue;
 
     fn scale(&self, v: FromValue) -> ToValue;
+}
+
+pub trait TryProjector<FromValue, ToValue> {
+    type Error;
+
+    fn try_transform(&self, v: FromValue) -> Result<ToValue, Self::Error>;
+
+    fn try_translate(&self, v: FromValue) -> Result<ToValue, Self::Error>;
+
+    fn try_scale(&self, v: FromValue) -> Result<ToValue, Self::Error>;
 }
 
 pub trait MutProjector<WithValue> {
@@ -53,36 +66,102 @@ macro_rules! rewrap {
     };
 }
 
-impl<T> Projector<Complex<Source<T>>, Complex<Projected<T>>> for Projection<Complex<Source<T>>>
+macro_rules! try_rewrap {
+    ($v:tt : Complex<Projected<$u:ty => $t:ty>>) => {{
+        let Source(Complex { re: r, im: i }): Source<Complex<$u>> = $v.into();
+        Projected(Complex {
+            re: r.try_into()?,
+            im: i.try_into()?,
+        })
+        .into(): Complex<Projected<$t>>
+    }};
+    ($v:tt : Complex<Source<$u:ty => $t:ty>>) => {{
+        let Projected(Complex { re: r, im: i }): Projected<Complex<$u>> = $v.into();
+        Source(Complex {
+            re: r.try_into()?,
+            im: i.try_into()?,
+        })
+        .into(): Complex<Source<$t>>
+    }};
+}
+
+impl<T, U> Projector<Complex<Source<T>>, Complex<Projected<U>>> for Projection<Complex<Source<T>>>
 where
     T: Clone + Float,
+    T: Into<U>,
 {
-    fn transform(&self, v: Complex<Source<T>>) -> Complex<Projected<T>> {
-        rewrap!(((v - self.tn) / self.tx): Complex<Projected<T>>)
+    fn transform(&self, v: Complex<Source<T>>) -> Complex<Projected<U>> {
+        rewrap!(((v - self.tn) / self.tx): Complex<Projected<U>>)
     }
 
-    fn translate(&self, v: Complex<Source<T>>) -> Complex<Projected<T>> {
-        rewrap!((v - self.tn): Complex<Projected<T>>)
+    fn translate(&self, v: Complex<Source<T>>) -> Complex<Projected<U>> {
+        rewrap!((v - self.tn): Complex<Projected<U>>)
     }
 
-    fn scale(&self, v: Complex<Source<T>>) -> Complex<Projected<T>> {
-        rewrap!((v / self.tx.norm()): Complex<Projected<T>>)
+    fn scale(&self, v: Complex<Source<T>>) -> Complex<Projected<U>> {
+        rewrap!((v / self.tx.norm()): Complex<Projected<U>>)
     }
 }
 
-impl<T: Clone + Float> Projector<Complex<Projected<T>>, Complex<Source<T>>>
+impl<T, U> TryProjector<Complex<Source<T>>, Complex<Projected<U>>>
     for Projection<Complex<Source<T>>>
+where
+    T: Clone + Float,
+    T: TryInto<U>,
 {
-    fn transform(&self, v: Complex<Projected<T>>) -> Complex<Source<T>> {
-        rewrap!(v: Complex<Source<T>>) * self.tx + self.tn
+    type Error = T::Error;
+
+    fn try_transform(&self, v: Complex<Source<T>>) -> Result<Complex<Projected<U>>, Self::Error> {
+        Ok(try_rewrap!(
+            ((v - self.tn) / self.tx): Complex<Projected<T => U>>
+        ))
     }
 
-    fn translate(&self, v: Complex<Projected<T>>) -> Complex<Source<T>> {
-        rewrap!(v: Complex<Source<T>>) + self.tn
+    fn try_translate(&self, v: Complex<Source<T>>) -> Result<Complex<Projected<U>>, Self::Error> {
+        Ok(try_rewrap!((v - self.tn): Complex<Projected<T => U>>))
     }
 
-    fn scale(&self, v: Complex<Projected<T>>) -> Complex<Source<T>> {
-        rewrap!(v: Complex<Source<T>>) * self.tx.norm()
+    fn try_scale(&self, v: Complex<Source<T>>) -> Result<Complex<Projected<U>>, Self::Error> {
+        Ok(try_rewrap!((v / self.tx.norm()): Complex<Projected<T => U>>))
+    }
+}
+
+impl<T, U> Projector<Complex<Projected<T>>, Complex<Source<U>>> for Projection<Complex<Source<U>>>
+where
+    U: Clone + Float,
+    T: Into<U>,
+{
+    fn transform(&self, v: Complex<Projected<T>>) -> Complex<Source<U>> {
+        rewrap!(v: Complex<Source<U>>) * self.tx + self.tn
+    }
+
+    fn translate(&self, v: Complex<Projected<T>>) -> Complex<Source<U>> {
+        rewrap!(v: Complex<Source<U>>) + self.tn
+    }
+
+    fn scale(&self, v: Complex<Projected<T>>) -> Complex<Source<U>> {
+        rewrap!(v: Complex<Source<U>>) * self.tx.norm()
+    }
+}
+
+impl<T, U> TryProjector<Complex<Projected<T>>, Complex<Source<U>>>
+    for Projection<Complex<Source<U>>>
+where
+    U: Clone + Float,
+    T: TryInto<U>,
+{
+    type Error = T::Error;
+
+    fn try_transform(&self, v: Complex<Projected<T>>) -> Result<Complex<Source<U>>, Self::Error> {
+        Ok(try_rewrap!(v: Complex<Source<T => U>>) * self.tx + self.tn)
+    }
+
+    fn try_translate(&self, v: Complex<Projected<T>>) -> Result<Complex<Source<U>>, Self::Error> {
+        Ok(try_rewrap!(v: Complex<Source<T => U>>) + self.tn)
+    }
+
+    fn try_scale(&self, v: Complex<Projected<T>>) -> Result<Complex<Source<U>>, Self::Error> {
+        Ok(try_rewrap!(v: Complex<Source<T => U>>) * self.tx.norm())
     }
 }
 
@@ -110,18 +189,19 @@ impl<T: Copy + AddAssign + MulAssign> MutProjector<T> for Projection<T> {
     }
 }
 
-impl<T: Copy + Float + NumAssign> MutProjector<Complex<Projected<T>>>
-    for Projection<Complex<Source<T>>>
+impl<T, U> MutProjector<Complex<Projected<T>>> for Projection<Complex<Source<U>>>
 where
-    Projection<Complex<Source<T>>>: Projector<Complex<Projected<T>>, Complex<Source<T>>>,
+    Projection<Complex<Source<T>>>: Projector<Complex<Projected<T>>, Complex<Source<U>>>,
+    U: Copy + Float + NumAssign,
+    T: Into<U>,
 {
     fn set_translate(&mut self, v: Value<Complex<Projected<T>>>) {
         match v {
             Absolute(v) => {
-                self.tn = rewrap!(v: Complex<Source<T>>) * self.tx;
+                self.tn = rewrap!(v: Complex<Source<U>>) * self.tx;
             }
             Relative(v) => {
-                self.tn += rewrap!(v: Complex<Source<T>>) * self.tx;
+                self.tn += rewrap!(v: Complex<Source<U>>) * self.tx;
             }
         }
     }
@@ -129,10 +209,10 @@ where
     fn set_transform(&mut self, v: Value<Complex<Projected<T>>>) {
         match v {
             Absolute(v) => {
-                self.tx = rewrap!(v: Complex<Source<T>>) * self.tx;
+                self.tx = rewrap!(v: Complex<Source<U>>) * self.tx;
             }
             Relative(v) => {
-                self.tx *= rewrap!(v: Complex<Source<T>>) * self.tx;
+                self.tx *= rewrap!(v: Complex<Source<U>>) * self.tx;
             }
         }
     }
@@ -149,19 +229,25 @@ impl<T: Default> Default for Projected<T> {
     }
 }
 
-impl<T> From<Complex<Source<T>>> for Source<Complex<T>> {
-    fn from(v: Complex<Source<T>>) -> Source<Complex<T>> {
+impl<T, U> From<Complex<Source<T>>> for Source<Complex<U>>
+where
+    T: Into<U>,
+{
+    fn from(v: Complex<Source<T>>) -> Source<Complex<U>> {
         Source(Complex {
-            re: v.re.0,
-            im: v.im.0,
+            re: v.re.0.into(),
+            im: v.im.0.into(),
         })
     }
 }
-impl<T> From<Complex<Projected<T>>> for Projected<Complex<T>> {
-    fn from(v: Complex<Projected<T>>) -> Projected<Complex<T>> {
+impl<T, U> From<Complex<Projected<T>>> for Projected<Complex<U>>
+where
+    T: Into<U>,
+{
+    fn from(v: Complex<Projected<T>>) -> Projected<Complex<U>> {
         Projected(Complex {
-            re: v.re.0,
-            im: v.im.0,
+            re: v.re.0.into(),
+            im: v.im.0.into(),
         })
     }
 }
@@ -183,14 +269,14 @@ impl<T> From<Projected<Complex<T>>> for Complex<Projected<T>> {
     }
 }
 
-impl<T> From<Projected<T>> for Source<T> {
-    fn from(Projected(v): Projected<T>) -> Source<T> {
-        Source(v)
+impl<T: Into<U>, U> From<Projected<T>> for Source<U> {
+    fn from(Projected(v): Projected<T>) -> Source<U> {
+        Source(v.into())
     }
 }
-impl<T> From<Source<T>> for Projected<T> {
-    fn from(Source(v): Source<T>) -> Projected<T> {
-        Projected(v)
+impl<T: Into<U>, U> From<Source<T>> for Projected<U> {
+    fn from(Source(v): Source<T>) -> Projected<U> {
+        Projected(v.into())
     }
 }
 

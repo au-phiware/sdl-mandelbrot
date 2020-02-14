@@ -2,8 +2,8 @@ use crate::compute::compute_orbit;
 use crate::projection::*;
 use arr_macro::arr;
 use num_complex::Complex;
-use num_traits::{AsPrimitive, Float};
-use palette::{rgb::Rgb, Lch, Pixel, Srgb};
+use num_traits::{Float, ToPrimitive};
+use palette::{rgb::Rgb, Lch, Pixel as PalettePixel, Srgb};
 use sdl2::{
     pixels::{Color, Palette, PixelFormatEnum},
     rect::Point,
@@ -12,11 +12,13 @@ use sdl2::{
     video::Window,
 };
 use std::{
+    convert::TryFrom,
+    iter::Step,
     sync::mpsc::{channel, SendError},
     thread::{self, JoinHandle},
 };
 
-const INITIAL_RES: i32 = 11;
+const INITIAL_RES: usize = 11;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Default, PartialOrd, Ord)]
 pub struct Size {
@@ -24,16 +26,83 @@ pub struct Size {
     pub h: u32,
 }
 
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    ToPrimitive,
+    FromPrimitive,
+    NumOps,
+    NumCast,
+    One,
+    Zero,
+    Num,
+)]
+pub struct Pixel(i32);
+
+pub type Real = f64;
+
+pub type Value = Complex<Source<Real>>;
+
+impl From<Pixel> for Real {
+    fn from(p: Pixel) -> Real {
+        p.0 as Real
+    }
+}
+
+impl TryFrom<f64> for Pixel {
+    type Error = &'static str;
+    fn try_from(v: f64) -> Result<Self, Self::Error> {
+        let v = v.round();
+        if v.is_finite() && (std::i32::MIN as f64) < v && v < (std::i32::MAX as f64) {
+            Ok(Pixel(v as i32))
+        } else {
+            Err("out of range float type conversion attempted")
+        }
+    }
+}
+
+impl Into<Point> for Projected<Complex<Pixel>> {
+    fn into(self) -> Point {
+        Point::new((self.0).re.0, (self.0).im.0)
+    }
+}
+
+impl Step for Pixel {
+    fn steps_between(start: &Self, end: &Self) -> Option<usize> {
+        i32::steps_between(&start.0, &end.0)
+    }
+    fn replace_one(&mut self) -> Self {
+        Self(self.0.replace_one())
+    }
+    fn replace_zero(&mut self) -> Self {
+        Self(self.0.replace_zero())
+    }
+    fn add_one(&self) -> Self {
+        Self(self.0.add_one())
+    }
+    fn sub_one(&self) -> Self {
+        Self(self.0.sub_one())
+    }
+    fn add_usize(&self, n: usize) -> Option<Self> {
+        self.0.add_usize(n).map(|s| Self(s))
+    }
+}
+
 pub struct Image {
-    pub projection: Projection<Complex<Source<f64>>>,
+    pub projection: Projection<Value>,
     size: Size,
-    drawn_state: Option<(Projection<Complex<Source<f64>>>, Size)>,
+    drawn_state: Option<(Projection<Value>, Size)>,
 
     pixels: Vec<u8>,
-    res: i32,
+    res: usize,
 
-    orbit: Vec<Complex<Source<f64>>>,
-    c: Option<Complex<Source<f64>>>,
+    orbit: Vec<Value>,
+    c: Option<Value>,
 
     palette: [Color; 256],
 }
@@ -44,10 +113,10 @@ impl Image {
             pixels: Vec::new(),
             size,
             res: INITIAL_RES,
-            projection: Projection::<Complex<Source<f64>>>::default(),
+            projection: Projection::<Value>::default(),
             drawn_state: None,
 
-            orbit: Vec::<Complex<Source<f64>>>::new(),
+            orbit: Vec::<Value>::new(),
             c: None,
 
             palette: {
@@ -103,18 +172,19 @@ impl Image {
         drop(results_tx);
 
         {
-            let w = self.size.w as i32;
-            let h = self.size.h as i32;
+            let w = Pixel(self.size.w as i32);
+            let h = Pixel(self.size.h as i32);
             let res = self.res;
             let mut i = 0;
-            for y in ((res - 1) / 2..h).step_by(res as usize) {
-                for x in ((res - 1) / 2..w).step_by(res as usize) {
-                    let idx = (y * w + x) as usize;
+            for y in (Pixel((res as i32 - 1) / 2)..h).step_by(res) {
+                for x in (Pixel((res as i32 - 1) / 2)..w).step_by(res) {
+                    let idx = (y * w + x)
+                        .to_usize()
+                        .expect("pixel coordinates cannot be negative");
                     if self.pixels[idx] == 0 {
-                        let c = self.projection.transform(Complex::<Projected<f64>> {
-                            re: Projected(x as f64),
-                            im: Projected(y as f64),
-                        });
+                        let c = self.projection.transform(
+                            Projected(Complex { re: x, im: y }).into(): Complex<Projected<Pixel>>,
+                        );
                         if !(Source(4.) * (c + Source(1.)).norm() < Source(1.) || {
                             let (r, t) = (c - Source(0.25)).to_polar();
                             Source(2.) * r < Source(1.) - t.cos()
@@ -140,15 +210,11 @@ impl Image {
         }
     }
 
-    pub fn needs_draw(&self, p: Option<Complex<Source<f64>>>) -> bool {
+    pub fn needs_draw(&self, p: Option<Value>) -> bool {
         self.res > 0 || p != self.c || self.drawn_state != Some((self.projection, self.size))
     }
 
-    pub fn draw(
-        &mut self,
-        window: &mut Canvas<Window>,
-        p: Option<Complex<Source<f64>>>,
-    ) -> Result<(), String> {
+    pub fn draw(&mut self, window: &mut Canvas<Window>, p: Option<Value>) -> Result<(), String> {
         let texture_creator = window.texture_creator();
 
         // Check if pixels can be reused
@@ -168,9 +234,9 @@ impl Image {
         if self.res > 1 {
             let w = self.size.w as i32;
             let h = self.size.h as i32;
-            let res = self.res;
-            for x in ((res - 1) / 2..w).step_by(res as usize) {
-                for y in ((res - 1) / 2..h).step_by(res as usize) {
+            let res = self.res as i32;
+            for x in ((res - 1) / 2..w).step_by(self.res) {
+                for y in ((res - 1) / 2..h).step_by(self.res) {
                     let n = pixels[(y * w + x) as usize];
                     for i in -((res - 1) / 2)..=((res - 1) / 2) {
                         for j in -((res - 1) / 2)..=((res - 1) / 2) {
@@ -184,9 +250,11 @@ impl Image {
             }
         }
 
-        // Increase detail
-        if self.res > 0 {
+        // Increase detail; zero will skip compute altogether
+        if self.res > 1 {
             self.res -= 2;
+        } else if self.res == 1 {
+            self.res = 0
         }
 
         // Prepare surface and copy to window
@@ -209,7 +277,7 @@ impl Image {
             self.c = p;
             if let Some(p) = p {
                 self.orbit.clear();
-                self.orbit.push(Complex::<Source<f64>>::default());
+                self.orbit.push(Value::default());
                 self.orbit.push(p);
                 compute_orbit(p, Some(&mut self.orbit));
             }
