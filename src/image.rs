@@ -283,20 +283,46 @@ impl Image {
             }
         }
         if self.c.is_some() {
-            window.draw_lines::<&[Point]>(
-                self.orbit
-                    .iter()
-                    .filter_map(|&c| {
-                        let p: Complex<Projected<f64>> = self.projection.transform(c);
-                        if p.is_finite() {
-                            Some(Point::new(p.re.as_(), p.im.as_()))
-                        } else {
-                            None
+            let points = self
+                .orbit
+                .iter()
+                .map(|&c| {
+                    let p: Result<Complex<Projected<Pixel>>, _> = self.projection.try_transform(c);
+                    if let Ok(p) = p {
+                        Some(Point::new((p.re.0).0, (p.im.0).0))
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>();
+            if points[0].is_none() {
+                if points.len() > 1 {
+                    if let Some(p) = points[1] {
+                        if let Some(Some(origin)) = (1..64)
+                            .into_iter()
+                            .map(|i| {
+                                self.projection
+                                    .try_transform(
+                                        self.orbit[1] * Source(1. - 1. / ((1 << i) as f64)),
+                                    )
+                                    .ok():
+                                    Option<Complex<Projected<Pixel>>>
+                            })
+                            .find(|&c| c.is_some())
+                        {
+                            window.draw_line(p, origin.into(): Projected<Complex<Pixel>>)?;
                         }
-                    })
-                    .collect::<Vec<_>>()
-                    .as_slice(),
-            )?;
+                    }
+                }
+            }
+            for line in points.split(|c| c.is_none()).filter(|l| !l.is_empty()) {
+                window.draw_lines::<&[Point]>(
+                    line.iter()
+                        .filter_map(|&p| p)
+                        .collect::<Vec<_>>()
+                        .as_slice(),
+                )?;
+            }
         }
 
         Result::Ok(())
