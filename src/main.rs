@@ -7,6 +7,9 @@ extern crate num_traits;
 extern crate num_derive;
 extern crate palette;
 extern crate sdl2;
+#[macro_use]
+extern crate lazy_static;
+extern crate crossbeam_channel;
 
 use crate::image::*;
 use crate::projection::{MutProjector, Projected, Projector, Source, Value::*};

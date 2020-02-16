@@ -1,6 +1,7 @@
 use crate::compute::compute_orbit;
 use crate::projection::*;
 use arr_macro::arr;
+use crossbeam_channel::{bounded as channel, SendError};
 use num_complex::Complex;
 use num_traits::{Float, ToPrimitive};
 use palette::{rgb::Rgb, Lch, Pixel as PalettePixel, Srgb};
@@ -14,11 +15,11 @@ use sdl2::{
 use std::{
     convert::TryFrom,
     iter::Step,
-    sync::mpsc::{channel, SendError},
-    thread::{self, JoinHandle},
+    sync::{Arc, RwLock},
+    thread,
 };
 
-const INITIAL_RES: usize = 11;
+const INITIAL_RES: usize = 5;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Default, PartialOrd, Ord)]
 pub struct Size {
@@ -98,8 +99,7 @@ pub struct Image {
     size: Size,
     drawn_state: Option<(Projection<Value>, Size)>,
 
-    pixels: Vec<u8>,
-    res: usize,
+    pixels: compute::Surface<Value, u8>,
 
     orbit: Vec<Value>,
     c: Option<Value>,
@@ -110,7 +110,16 @@ pub struct Image {
 impl Image {
     pub fn new(size: Size) -> Self {
         Image {
-            pixels: Vec::new(),
+            pixels: compute::Surface::new(|c| {
+                if !(Source(4.) * (c + Source(1.)).norm() < Source(1.) || {
+                    let (r, t) = (c - Source(0.25)).to_polar();
+                    Source(2.) * r < Source(1.) - t.cos()
+                }) {
+                    compute_orbit(c, None)
+                } else {
+                    None
+                }
+            }),
             size,
             res: INITIAL_RES,
             projection: Projection::<Value>::default(),
@@ -138,9 +147,9 @@ impl Image {
     }
 
     pub fn clear(&mut self) {
-        self.pixels.clear();
-        self.pixels
-            .resize_with((self.size.w * self.size.h) as usize, Default::default);
+        let mut pixels = self.pixels.write().unwrap();
+        pixels.clear();
+        pixels.resize_with((self.size.w * self.size.h) as usize, Default::default);
     }
 
     pub fn size(&self) -> Size {
@@ -153,61 +162,42 @@ impl Image {
     }
 
     pub fn compute(&mut self) {
-        const N: usize = 32;
-        let (results_tx, results_rx) = channel();
-        let (mut workers, mut worker_handles) = (Vec::with_capacity(N), Vec::with_capacity(N));
-        for _ in 0..N {
-            let results = results_tx.clone();
-            let (worker, port) = channel();
-            let handle: JoinHandle<Result<_, SendError<_>>> = thread::spawn(move || {
-                while let Ok((idx, c)) = port.recv() {
-                    let n = compute_orbit(c, None);
-                    results.send((idx, n))?;
-                }
-                Ok(())
-            });
-            workers.push(worker);
-            worker_handles.push(handle);
-        }
-        drop(results_tx);
-
-        {
+        let feeder = {
+            let pixels = Arc::clone(&self.pixels);
             let w = Pixel(self.size.w as i32);
             let h = Pixel(self.size.h as i32);
             let res = self.res;
-            let mut i = 0;
-            for y in (Pixel((res as i32 - 1) / 2)..h).step_by(res) {
-                for x in (Pixel((res as i32 - 1) / 2)..w).step_by(res) {
-                    let idx = (y * w + x)
-                        .to_usize()
-                        .expect("pixel coordinates cannot be negative");
-                    if self.pixels[idx] == 0 {
-                        let c = self.projection.transform(
-                            Projected(Complex { re: x, im: y }).into(): Complex<Projected<Pixel>>,
-                        );
-                        if !(Source(4.) * (c + Source(1.)).norm() < Source(1.) || {
-                            let (r, t) = (c - Source(0.25)).to_polar();
-                            Source(2.) * r < Source(1.) - t.cos()
-                        }) {
-                            if idx < self.pixels.len() {
-                                workers[i % N].send((idx, c)).unwrap();
-                                i = i.wrapping_add(1);
-                            }
-                        } else {
-                            self.pixels[idx] = 255;
+            let projection = self.projection;
+            thread::spawn(move || {
+                for y in (Pixel((res as i32 - 1) / 2)..h).step_by(res) {
+                    for x in (Pixel((res as i32 - 1) / 2)..w).step_by(res) {
+                        let idx = (y * w + x)
+                            .to_usize()
+                            .expect("pixel coordinates cannot be negative");
+                        if {
+                            let pixels = pixels.read().unwrap();
+                            pixels[idx] == 0 && idx < pixels.len()
+                        } {
+                            let c = projection.transform(
+                                Projected(Complex { re: x, im: y }).into():
+                                    Complex<Projected<Pixel>>,
+                            );
+                            pixels_out.send((idx, c))?;
                         }
                     }
                 }
-            }
-        }
-        drop(workers);
+                Ok(()): Result<_, SendError<_>>
+            })
+        };
 
-        while let Ok((idx, n)) = results_rx.recv() {
-            self.pixels[idx] = n.map(|n| (n % 254 + 1) as u8).unwrap_or(255);
+        while let Ok((idx, n)) = values_in.recv() {
+            let mut pixels = self.pixels.write().unwrap();
+            pixels[idx] = n.map(|n| (n % 254 + 1) as u8).unwrap_or(255);
         }
-        for w in worker_handles.into_iter() {
+        for w in workers {
             w.join().unwrap().unwrap();
         }
+        feeder.join().unwrap().unwrap();
     }
 
     pub fn needs_draw(&self, p: Option<Value>) -> bool {
@@ -220,16 +210,11 @@ impl Image {
         // Check if pixels can be reused
         if self.drawn_state != Some((self.projection, self.size)) {
             self.clear();
-            self.res = INITIAL_RES;
             self.drawn_state = Some((self.projection, self.size));
-        }
-        // Calculate pixel values
-        if self.res > 0 {
-            self.compute();
         }
 
         // Prepare pixels for texture
-        let mut pixels = self.pixels.clone();
+        let mut pixels = { self.pixels.read().unwrap().clone() };
         // Pixelate over missing pixels
         if self.res > 1 {
             let w = self.size.w as i32;
@@ -248,13 +233,6 @@ impl Image {
                     }
                 }
             }
-        }
-
-        // Increase detail; zero will skip compute altogether
-        if self.res > 1 {
-            self.res -= 2;
-        } else if self.res == 1 {
-            self.res = 0
         }
 
         // Prepare surface and copy to window
