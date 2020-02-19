@@ -1,6 +1,6 @@
 use crossbeam_channel::{bounded as channel, Receiver, SendError, Sender};
 use num_complex::Complex;
-use num_traits::{Float, FromPrimitive, Zero};
+use num_traits::{Float, FromPrimitive};
 use std::{
     any::type_name,
     env,
@@ -39,25 +39,26 @@ pub fn compute_orbit<T: Float + FromPrimitive>(
     }
 }
 
-pub type Command<U> = FnOnce(&Vec<U>);
-
-pub struct Surface<T, U> {
-    fan_out: JoinHandle<_>,
-    fan_from: Vec<U>,
-    workers: Vec<JoinHandle<_>>,
-    fan_into: Vec<U>,
-    fan_in: JoinHandle<_>,
-
-    cmd_tx: Option<Sender>,
-    cmd_rx: Option<Receiver>,
+pub enum Command<U, F: FnOnce(usize, &Vec<U>)> {
+    Immediate(F),
+    Deferred(F),
 }
 
-impl<T, U> Surface<T, U>
+pub struct Surface<T, U, F: FnOnce(usize, &Vec<U>)> {
+    fan_out: JoinHandle<_>,
+    workers: Vec<JoinHandle<_>>,
+    fan_in: JoinHandle<_>,
+
+    cmd_tx: Option<Sender<Command<U, F>>>,
+    cmd_rx: Option<Receiver<Command<U, F>>>,
+}
+
+impl<T, U, F: FnOnce(usize, &Vec<U>)> Surface<T, U, F>
 where
     T: Copy,
-    U: Copy + Zero,
+    U: Copy + Default,
 {
-    pub fn new(compute: Fn(T) -> U) -> Self {
+    pub fn new<G: Fn(T) -> U>(compute: G) -> Self {
         Self::with_thread_count(
             compute,
             env::var("NUM_THREADS")
@@ -67,26 +68,53 @@ where
         )
     }
 
-    pub fn with_thread_count(compute: Fn(T) -> U, n: usize) -> Self {
-        let initial_stride = 5_usize;
+    pub fn with_thread_count<G: Fn(T) -> U, H: Fn(usize, usize) -> T>(compute: G, t: H, n: usize) -> Self {
         let mut workers = Vec::with_capacity(n);
+        let fan_from: Vec<U> = Vec::new();
+        let fan_into: Vec<U> = Vec::new();
         let fan_out = thread::spawn(move || {
-            while let Some((w, h)) = rx.recv() {
-                let size = w *h;
-                fan_from.clear();
+            let default = Default::<U>::default();
+            while let Ok((clear, stride, w, h)) = rx.recv() {
+                let size = w * h;
+                if clear {
+                    fan_from.clear();
+                }
                 fan_from.resize_with(size, Default::default);
-                fan_into.clear();
-                fan_into.resize_with(size, Default::default);
-                for s in initial_stride..1 {
-                    for y in (s..h).step_by(s*2 + 1) {
-                        for x in (s..w).step_by(s*2+1) {
-                            let index = y * w + x;
-                            if index < size && fan_from[index] == U::zero() {
-                                if Some() = tx.send((s, index, t)) {
+                cmd_tx.send(Command::Deferred(|_, fan_into| {
+                    fan_into.truncate(size);
+                    fan_from.clone_from_slice(fan_into.as_slice());
+                })?;
+                'all_pixel: for y in (stride..h).step_by(stride * 2 + 1) {
+                    for x in (stride..w).step_by(stride * 2 + 1) {
+                        let index = y * w + x;
+                        if index < size && fan_from[index] == default {
+                            if tx.send((index, t(x, y))).is_err() {
+                                break 'all_pixel;
                             }
                         }
                     }
-                    (fan_from, fan_into) = (fan_into, fan_from);
+                }
+            }
+        });
+        let fan_in = thread::spawn(move || {
+            while let Some(stride) = rx.recv() {
+                let defers = Vec::new();
+                loop {
+                    select! {
+                        recv(rx) -> data => if let Ok((index, u)) = data {
+                            fan_into.resize_with(index + 1, Default::default);
+                            fan_into[index] = u
+                        } else {
+                            break
+                        },
+                        recv(cmd_rx) -> Ok(cmd) => match cmd {
+                            Command::Immediate(cmd) => cmd(stride, fan_into),
+                            Command::Deferred(cmd) => defers.push(cmd),
+                        },
+                    }
+                }
+                for cmd in defers {
+                    cmd(stride, fan_into);
                 }
             }
         });
@@ -94,8 +122,8 @@ where
             for _ in 0..n {
                 workers.push(thread::spawn(move || {
                     while let Some((tx, rx)) = leaf() {
-                        while let Ok((stride, index, c)) = rx.recv() {
-                            if tx.send((stride, index, compute(c))).is_err() {
+                        while let Ok((index, c)) = rx.recv() {
+                            if tx.send((index, compute(c))).is_err() {
                                 break;
                             }
                         }
@@ -105,9 +133,7 @@ where
         }
         Surface {
             fan_out,
-            fan_from,
             workers,
-            fan_into,
             fan_in,
             cmd_tx: None,
             cmd_rx: None,
@@ -120,8 +146,13 @@ where
 
     pub fn request(&mut self, cmd: Command<U>) {}
 
-    pub fn compute(&mut self, compute: Fn(T) -> U, initial_stride: usize) {
+    pub fn compute<G: Fn(T) -> U>(&mut self, compute: G, initial_stride: usize) {
         let (ttx, trx) = channel(n << 1);
         let (utx, urx) = channel(n << 1);
+        let s = initial_stride;
+        tx.send((true, s, w, h))?;
+        for s in s..1 {
+            tx.send((false, s, w, h))?;
+        }
     }
 }
