@@ -42,12 +42,16 @@ pub fn compute_orbit<T: Float + FromPrimitive>(
 pub enum Command<U, F: FnOnce(usize, &Vec<U>)> {
     Immediate(F),
     Deferred(F),
+    Update(usize, U),
 }
 
 pub struct Surface<T, U, F: FnOnce(usize, &Vec<U>)> {
     fan_out: JoinHandle<_>,
     workers: Vec<JoinHandle<_>>,
     fan_in: JoinHandle<_>,
+
+    width: usize,
+    height: usize,
 
     cmd_tx: Option<Sender<Command<U, F>>>,
     cmd_rx: Option<Receiver<Command<U, F>>>,
@@ -58,9 +62,17 @@ where
     T: Copy,
     U: Copy + Default,
 {
-    pub fn new<G: Fn(T) -> U>(compute: G) -> Self {
+    pub fn new<G: Fn(T) -> U, H: Fn(usize, usize) -> T>(
+        compute: G,
+        from_cartesian: H,
+        width: usize,
+        height: usize,
+    ) -> Self {
         Self::with_thread_count(
             compute,
+            from_cartesian,
+            width,
+            height,
             env::var("NUM_THREADS")
                 .ok()
                 .and_then(|v| usize::from_str_radix(v.as_str(), 10).ok())
@@ -68,13 +80,19 @@ where
         )
     }
 
-    pub fn with_thread_count<G: Fn(T) -> U, H: Fn(usize, usize) -> T>(compute: G, t: H, n: usize) -> Self {
+    pub fn with_thread_count<G: Fn(T) -> U, H: Fn(usize, usize) -> T>(
+        compute: G,
+        from_cartesian: H,
+        width: usize,
+        height: usize,
+        n: usize,
+    ) -> Self {
         let mut workers = Vec::with_capacity(n);
         let fan_from: Vec<U> = Vec::new();
         let fan_into: Vec<U> = Vec::new();
         let fan_out = thread::spawn(move || {
             let default = Default::<U>::default();
-            while let Ok((clear, stride, w, h)) = rx.recv() {
+            while let Ok((tx, cmd_tx, clear, stride, w, h)) = rx.recv() {
                 let size = w * h;
                 if clear {
                     fan_from.clear();
@@ -83,12 +101,12 @@ where
                 cmd_tx.send(Command::Deferred(|_, fan_into| {
                     fan_into.truncate(size);
                     fan_from.clone_from_slice(fan_into.as_slice());
-                })?;
+                }))?;
                 'all_pixel: for y in (stride..h).step_by(stride * 2 + 1) {
                     for x in (stride..w).step_by(stride * 2 + 1) {
                         let index = y * w + x;
                         if index < size && fan_from[index] == default {
-                            if tx.send((index, t(x, y))).is_err() {
+                            if tx.send((index, from_cartesian(x, y))).is_err() {
                                 break 'all_pixel;
                             }
                         }
@@ -97,25 +115,30 @@ where
             }
         });
         let fan_in = thread::spawn(move || {
-            while let Some(stride) = rx.recv() {
-                let defers = Vec::new();
+            let defers = Vec::new();
+            while let Some(stride, rx) = rx.recv() {
                 loop {
-                    select! {
-                        recv(rx) -> data => if let Ok((index, u)) = data {
+                    match select! {
+                        recv(rx) -> data => if data.is_err() {
+                            break
+                        } else {
+                            data
+                        },
+                        recv(cmd_rx) -> data => data,
+                    } {
+                        Ok(Command::Immediate(cmd)) => cmd(stride, fan_into),
+                        Ok(Command::Deferred(cmd)) => defers.push(cmd),
+                        Ok(Command::Update(index, u)) => {
                             fan_into.resize_with(index + 1, Default::default);
                             fan_into[index] = u
-                        } else {
-                            break
-                        },
-                        recv(cmd_rx) -> Ok(cmd) => match cmd {
-                            Command::Immediate(cmd) => cmd(stride, fan_into),
-                            Command::Deferred(cmd) => defers.push(cmd),
-                        },
-                    }
+                        }
+                        Err(_) => {}
+                    };
                 }
                 for cmd in defers {
                     cmd(stride, fan_into);
                 }
+                defers.clear();
             }
         });
         {
@@ -123,7 +146,7 @@ where
                 workers.push(thread::spawn(move || {
                     while let Some((tx, rx)) = leaf() {
                         while let Ok((index, c)) = rx.recv() {
-                            if tx.send((index, compute(c))).is_err() {
+                            if tx.send(Command::Update(index, compute(c))).is_err() {
                                 break;
                             }
                         }
@@ -135,24 +158,27 @@ where
             fan_out,
             workers,
             fan_in,
+            width,
+            height,
             cmd_tx: None,
             cmd_rx: None,
         }
     }
 
-    pub fn clear(&mut self) {}
+    pub fn resize(&mut self, width: usize, height: usize) {
+        self.width = width;
+        self.height = height;
+    }
 
-    pub fn resize(&mut self, size: usize) {}
-
-    pub fn request(&mut self, cmd: Command<U>) {}
+    pub fn request(&mut self, cmd: Command<U, F>) {}
 
     pub fn compute<G: Fn(T) -> U>(&mut self, compute: G, initial_stride: usize) {
         let (ttx, trx) = channel(n << 1);
         let (utx, urx) = channel(n << 1);
         let s = initial_stride;
-        tx.send((true, s, w, h))?;
+        tx.send((true, s, self.width, self.height))?;
         for s in s..1 {
-            tx.send((false, s, w, h))?;
+            tx.send((false, s, self.width, self.height))?;
         }
     }
 }

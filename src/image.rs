@@ -55,6 +55,12 @@ impl From<Pixel> for Real {
     }
 }
 
+impl From<f64> for i32 {
+    fn from(real: f64) -> i32 {
+        real.round() as i32
+    }
+}
+
 impl TryFrom<f64> for Pixel {
     type Error = &'static str;
     fn try_from(v: f64) -> Result<Self, Self::Error> {
