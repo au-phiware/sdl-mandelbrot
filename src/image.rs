@@ -12,12 +12,7 @@ use sdl2::{
     surface::Surface,
     video::Window,
 };
-use std::{
-    convert::TryFrom,
-    iter::Step,
-    sync::{Arc, RwLock},
-    thread,
-};
+use std::{convert::TryFrom, iter::Step, sync::Arc, thread};
 
 const INITIAL_RES: usize = 5;
 
